@@ -1,5 +1,6 @@
-#include "audio_in.hpp"
+#include "audio.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -10,28 +11,54 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "sample_fifo.hpp"
+
 namespace {
 
-const char *TAG = "audio_in";
+const char *TAG = "audio";
 
 // Cardputer ADV: ES8311 codec on the internal I2C bus and a single full-duplex I2S bus.
 constexpr gpio_num_t kI2sBclk = GPIO_NUM_41;
 constexpr gpio_num_t kI2sWs = GPIO_NUM_43;
-constexpr gpio_num_t kI2sDout = GPIO_NUM_42;  // to the codec DAC (unused for now)
+constexpr gpio_num_t kI2sDout = GPIO_NUM_42;  // to the codec DAC
 constexpr gpio_num_t kI2sDin = GPIO_NUM_46;   // from the codec ADC
 constexpr gpio_num_t kI2cSda = GPIO_NUM_8;
 constexpr gpio_num_t kI2cScl = GPIO_NUM_9;
 constexpr uint8_t kEs8311Addr = 0x18;
 
+// ES8311 DAC volume register 0x32: 0xBF = 0 dB, 0.5 dB per step, 0x00 = -95.5 dB.
+// Headphone output of this codec is loud, so the level is capped well below full scale.
+constexpr uint8_t kDacRegStart = 0x83;  // -30 dB until the host sets a volume
+constexpr uint8_t kDacRegMax = 0x97;    // -20 dB: the loudest the host slider can make it
+constexpr uint8_t kDacRegAtHost0 = 0x5B;  // host volume 0 (-50 dB)
+
+constexpr size_t kBlock = 480;           // 10 ms at 48 kHz
+constexpr size_t kPrebuffer = 4 * kBlock;  // 40 ms before playback starts or resumes
+constexpr size_t kTrimAbove = 10 * kBlock; // 100 ms backlog: drop the oldest down to kPrebuffer
+
 i2s_chan_handle_t s_tx = nullptr;
 i2s_chan_handle_t s_rx = nullptr;
-MicSamplesCb s_cb = nullptr;
+i2c_master_dev_handle_t s_codec = nullptr;
+MicSamplesCb s_mic_cb = nullptr;
+
+SampleFifo<8192> s_play_fifo;
+std::atomic<bool> s_mute{false};
+
 std::atomic<uint32_t> s_read_ok{0};
 std::atomic<uint32_t> s_read_err{0};
 std::atomic<int> s_last_err{0};
 std::atomic<int> s_raw_peak{0};
+std::atomic<uint32_t> s_play_underrun{0};
+std::atomic<uint32_t> s_play_trim{0};
 
-bool es8311_init() {
+bool codec_write(uint8_t reg, uint8_t value) {
+    const uint8_t buf[2] = {reg, value};
+    esp_err_t err = i2c_master_transmit(s_codec, buf, 2, 100);
+    if (err != ESP_OK) ESP_LOGE(TAG, "ES8311 reg 0x%02x write: %s", reg, esp_err_to_name(err));
+    return err == ESP_OK;
+}
+
+bool codec_init() {
     i2c_master_bus_config_t bus_cfg = {};
     bus_cfg.i2c_port = I2C_NUM_0;
     bus_cfg.sda_io_num = kI2cSda;
@@ -49,39 +76,40 @@ bool es8311_init() {
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.device_address = kEs8311Addr;
     dev_cfg.scl_speed_hz = 400000;
-    i2c_master_dev_handle_t dev = nullptr;
-    err = i2c_master_bus_add_device(bus, &dev_cfg, &dev);
+    err = i2c_master_bus_add_device(bus, &dev_cfg, &s_codec);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2c add device: %s", esp_err_to_name(err));
         return false;
     }
-    // Register sequence taken from the espp m5stack-cardputer component (derived from M5Unified).
+    // Register sequences taken from the espp m5stack-cardputer component (derived from M5Unified).
     const uint8_t seq[][2] = {
         {0x00, 0x80},  // RESET: power on, CSM enabled
         {0x01, 0xBF},  // clock manager: MCLK from BCLK, DAC + ADC clocks on
         {0x02, 0x18},  // MULT_PRE = 3
         {0x0D, 0x01},  // power up analog circuits
+        // microphone (ADC) path
         {0x0E, 0x02},  // enable analog PGA / ADC modulator
         {0x14, 0x1A},  // select Mic1p-Mic1n, raised PGA gain
         {0x15, 0x40},  // ADC soft ramp / ALC
         {0x16, 0x24},  // mic digital gain scale
-        {0x17, 0xD7},  // ADC volume +12 dB (0xBF = 0 dB, 0.5 dB/step, 0xFF = +32 dB); 0 dB left speech at about -35 dBFS, +18 dB peaked at -1.5 dBFS
+        {0x17, 0xD7},  // ADC volume +12 dB (0xBF = 0 dB, 0.5 dB/step); +18 dB peaked at -1.5 dBFS
         {0x1C, 0x6A},  // ADC equalizer bypass
+        // playback (DAC) path
+        {0x12, 0x00},  // power up DAC
+        {0x13, 0x10},  // enable output to the headphone drive
+        {0x32, kDacRegStart},
+        {0x37, 0x08},  // bypass DAC equalizer
     };
     for (const auto &e : seq) {
-        err = i2c_master_transmit(dev, e, 2, 100);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "ES8311 reg 0x%02x write: %s", e[0], esp_err_to_name(err));
-            return false;
-        }
+        if (!codec_write(e[0], e[1])) return false;
     }
     ESP_LOGI(TAG, "ES8311 configured");
     return true;
 }
 
 void rx_task(void *) {
-    std::array<int16_t, 2 * 480> raw;   // 10 ms of stereo frames at 48 kHz
-    std::array<int16_t, 480> mono;
+    std::array<int16_t, 2 * kBlock> raw;
+    std::array<int16_t, kBlock> mono;
     uint32_t log_countdown = 0;
     while (true) {
         size_t got = 0;
@@ -100,14 +128,43 @@ void rx_task(void *) {
             mono[i] = raw[2 * i];  // left slot carries the ADC data
         }
         if (peak > s_raw_peak.load()) s_raw_peak.store(peak);
-        if (s_cb) s_cb(mono.data(), frames);
+        if (s_mic_cb) s_mic_cb(mono.data(), frames);
+    }
+}
+
+// Pulls from the playback FIFO at the pace of the I2S clock. Silence while buffering.
+void tx_task(void *) {
+    std::array<int16_t, kBlock> mono;
+    std::array<int16_t, 2 * kBlock> stereo;
+    bool playing = false;
+    while (true) {
+        size_t avail = s_play_fifo.available();
+        if (avail > kTrimAbove) {  // host runs faster than this clock: drop the oldest
+            s_play_fifo.discard(avail - kPrebuffer);
+            s_play_trim.fetch_add(1);
+            avail = s_play_fifo.available();
+        }
+        if (!playing && avail >= kPrebuffer) playing = true;
+        if (playing && avail < kBlock) {  // ran dry: re-buffer
+            playing = false;
+            s_play_underrun.fetch_add(1);
+        }
+        if (playing && !s_mute.load()) {
+            s_play_fifo.read(mono.data(), kBlock);
+        } else {
+            if (playing) s_play_fifo.discard(kBlock);  // muted: keep consuming so we stay in sync
+            std::fill(mono.begin(), mono.end(), 0);
+        }
+        for (size_t i = 0; i < kBlock; ++i) stereo[2 * i] = stereo[2 * i + 1] = mono[i];
+        size_t written = 0;
+        i2s_channel_write(s_tx, stereo.data(), stereo.size() * sizeof(int16_t), &written, portMAX_DELAY);
     }
 }
 
 }  // namespace
 
-bool audio_in_start(uint32_t sample_rate, MicSamplesCb cb) {
-    s_cb = cb;
+bool audio_start(uint32_t sample_rate, MicSamplesCb mic_cb) {
+    s_mic_cb = mic_cb;
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_tx, &s_rx);
@@ -128,17 +185,30 @@ bool audio_in_start(uint32_t sample_rate, MicSamplesCb cb) {
         ESP_LOGE(TAG, "i2s init std: %s", esp_err_to_name(err));
         return false;
     }
-    // Both channels share BCLK/WS; enable TX as well so the clocks certainly run (it sends zeros).
+    // Both channels share BCLK/WS; TX runs from the start so the clocks certainly run.
     if ((err = i2s_channel_enable(s_tx)) != ESP_OK || (err = i2s_channel_enable(s_rx)) != ESP_OK) {
         ESP_LOGE(TAG, "i2s enable: %s", esp_err_to_name(err));
         return false;
     }
     ESP_LOGI(TAG, "I2S running at %u Hz", (unsigned)sample_rate);
-    if (!es8311_init()) return false;
-    xTaskCreate(rx_task, "audio_in_rx", 4096, nullptr, 6, nullptr);
+    if (!codec_init()) return false;
+    xTaskCreate(rx_task, "audio_rx", 4096, nullptr, 6, nullptr);
+    xTaskCreate(tx_task, "audio_tx", 4096, nullptr, 6, nullptr);
     return true;
 }
 
-AudioInStats audio_in_stats() {
-    return {s_read_ok.load(), s_read_err.load(), s_last_err.load(), s_raw_peak.exchange(0)};
+void audio_play(const int16_t *samples, size_t count) { s_play_fifo.write(samples, count); }
+
+void audio_set_host_volume(uint32_t volume) {
+    if (!s_codec) return;
+    uint32_t reg = std::min<uint32_t>(kDacRegAtHost0 + std::min<uint32_t>(volume, 100), kDacRegMax);
+    codec_write(0x32, static_cast<uint8_t>(reg));
+}
+
+void audio_set_mute(bool mute) { s_mute.store(mute); }
+
+AudioStats audio_stats() {
+    return {s_read_ok.load(),      s_read_err.load(),       s_last_err.load(),
+            s_raw_peak.exchange(0), s_play_underrun.load(), s_play_trim.load(),
+            static_cast<uint32_t>(s_play_fifo.available())};
 }

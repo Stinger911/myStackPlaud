@@ -26,7 +26,7 @@
 #include "tusb.h"
 #include "usb_device_uac.h"
 
-#include "audio_in.hpp"
+#include "audio.hpp"
 #include "config.hpp"
 #include "debug.hpp"
 #include "m5stack-cardputer.hpp"
@@ -69,6 +69,7 @@ esp_err_t on_speaker_data(uint8_t *buf, size_t len, void *) {
         size_t n = std::min(frames - i, mono.size());
         for (size_t k = 0; k < n; ++k) mono[k] = s[(i + k) * kUacChannels];
         g_ring.push(mono.data(), n);
+        audio_play(mono.data(), n);
         i += n;
     }
     return ESP_OK;
@@ -99,8 +100,8 @@ esp_err_t on_mic_data(uint8_t *buf, size_t len, size_t *bytes_read, void *) {
     return ESP_OK;
 }
 
-void on_mute(uint32_t mute, void *) { ESP_LOGI(TAG, "host mute=%u", static_cast<unsigned>(mute)); }
-void on_volume(uint32_t volume, void *) { ESP_LOGI(TAG, "host volume=%u", static_cast<unsigned>(volume)); }
+void on_mute(uint32_t mute, void *) { audio_set_mute(mute != 0); }
+void on_volume(uint32_t volume, void *) { audio_set_host_volume(volume); }
 
 void watchdog_task(void *) {
     while (true) {
@@ -153,7 +154,7 @@ extern "C" void app_main() {
 
     auto init_mic = [&]() {
         ESP_LOGI(TAG, "init_mic: start");
-        if (!audio_in_start(kUacSampleRate, on_mic_samples)) {
+        if (!audio_start(kUacSampleRate, on_mic_samples)) {
             ESP_LOGE(TAG, "microphone init failed");
             std::snprintf(bottom, sizeof(bottom), "MIC INIT FAIL");
         }
@@ -192,7 +193,7 @@ extern "C" void app_main() {
         }
         if (g_frame % 30 == 0)
         {
-            AudioInStats st = audio_in_stats();
+            AudioStats st = audio_stats();
             ESP_LOGI(TAG, "frame %u mic_bytes=%u peak=%d | i2s ok=%u err=%u last_err=%d raw_peak=%d",
                      static_cast<unsigned>(g_frame), static_cast<unsigned>(g_mic_bytes.load()), g_mic_peak.load(),
                      static_cast<unsigned>(st.read_ok), static_cast<unsigned>(st.read_err), st.last_err, st.raw_peak);
@@ -203,10 +204,11 @@ extern "C" void app_main() {
         g_ring.snapshot(window.data(), window.size());
 #endif
         g_dbg_stage = 3;
-        std::snprintf(top, sizeof(top), "F%u A%u M%u U%u L%u", static_cast<unsigned>(g_frame),
+        std::snprintf(top, sizeof(top), "F%u A%u M%u U%u L%u P%u", static_cast<unsigned>(g_frame),
                       static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()),
                       static_cast<unsigned>(g_mic_underrun.load()),
-                      static_cast<unsigned>(g_mic_peak.exchange(0) / 1000));
+                      static_cast<unsigned>(g_mic_peak.exchange(0) / 1000),
+                      static_cast<unsigned>(audio_stats().play_underrun));
         screen_draw(connected, window.data(), window.size(), top, bottom);
         g_frame = g_frame + 1;
         g_heartbeat_us = esp_timer_get_time();

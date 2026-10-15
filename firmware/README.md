@@ -17,7 +17,15 @@ Builds with ESP-IDF v5.4. Verified on a Cardputer ADV (2026-10-15):
 - The espp microphone task delivered no data on this board (its errors are swallowed), so capture
   uses own I2S/ES8311 code in `main/audio_in.cpp`; `espp` is only used for the LCD. GPIO43 is both
   the I2S word select and UART0 TX, so the UART console is off in this build.
-- HUD (top line) shows `F` frames, `A` speaker callbacks, `M` mic callbacks. A watchdog restarts the
+- Playback to the codec DAC (headphone jack / built-in speaker) works together with the microphone:
+  a 60 s quiet tone had no clicks and no dropouts. The host stream goes through a FIFO (40 ms
+  pre-buffer, trimmed above 100 ms) read by a task paced by the I2S clock. DAC volume follows the
+  host slider but is capped at -20 dB (starts at -30 dB) because the headphone output is loud;
+  host mute silences it. USB and I2S clocks are independent, so a very long session may need more
+  buffer management (not observed in a 60 s test).
+- HUD (top line) shows `F` frames, `A` speaker callbacks, `M` mic callbacks, `U` mic underruns,
+  `L` mic peak (thousands), `P` playback re-buffer count.
+- Old HUD note: A watchdog restarts the
   device if the main loop stalls for 2 s and the bottom line then shows `STUCK S<stage> F<frame> A<cb>`.
 - A pure test tone looks frozen because the 40 ms window advances by about half a period per frame.
 
