@@ -2,10 +2,13 @@
 #include <cstddef>
 #include <cstdint>
 
-// Must match the usb_device_uac configuration (idf.py menuconfig).
-// Values here are assumptions until the first run on hardware.
-constexpr uint32_t kUacSampleRate = 48000;
-constexpr size_t kUacChannels = 2;  // speaker channels sent by the host
+#include "sdkconfig.h"
+
+// Taken from the usb_device_uac configuration (see sdkconfig.defaults / menuconfig),
+// so the waveform code always agrees with what the host is sent.
+constexpr uint32_t kUacSampleRate = CONFIG_UAC_SAMPLE_RATE;
+constexpr size_t kUacChannels = CONFIG_UAC_SPEAKER_CHANNEL_NUM;  // speaker channels sent by the host
+static_assert(CONFIG_UAC_BIT_RESOLUTION == 16, "waveform code assumes 16-bit samples");
 
 constexpr size_t kLcdWidth = 240;
 constexpr size_t kLcdHeight = 135;

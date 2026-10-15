@@ -6,19 +6,20 @@ audio to it, the waveform of that stream. The mic stream is silence for now.
 
 ## Status
 
-Scaffold only. **Not built and not run on hardware yet** (no ESP-IDF on the dev machine
-when this was written). Some calls are based on documentation, not on compiled code:
+Builds cleanly with ESP-IDF v5.4 (first build, 2026-10-15). **Not run on hardware yet.**
+Behaviour on the device is unverified; in particular:
 
 - `espp::M5StackCardputer::get()`, `initialize_lcd()`, `write_lcd_frame()` from
   `espp/m5stack-cardputer` - check names and that `write_lcd_frame` works without
   `initialize_display()`; check RGB565 byte order if colours look wrong.
-- `uac_device_init()` and its callbacks from `espressif/usb_device_uac`; the channel count
-  and sample rate in `main/config.hpp` must match the component config (`idf.py menuconfig`).
+- `uac_device_init()` and its callbacks from `espressif/usb_device_uac`. Channel count and
+  sample rate are pinned in `sdkconfig.defaults` (1 ch, 48 kHz, 16-bit) and read from
+  `CONFIG_UAC_*` in `main/config.hpp`.
 - `tud_mounted()` from TinyUSB as the CONNECTED signal.
 
 ## Build
 
-Requires ESP-IDF >= 5.1.
+Requires ESP-IDF >= 5.1 (tested with v5.4: `. ~/Work/esp/esp-idf/export.sh`).
 
     cd firmware
     idf.py set-target esp32s3
