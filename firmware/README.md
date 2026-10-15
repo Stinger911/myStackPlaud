@@ -9,7 +9,13 @@ audio to it, the waveform of that stream. The mic stream is silence for now.
 Builds with ESP-IDF v5.4. Verified on a Cardputer ADV (2026-10-15):
 
 - Screen test build (no USB audio): LCD, backlight, banner and waveform drawing work.
-- USB audio build: not yet checked on the device after the screen fixes.
+- USB audio build: enumerates on macOS as "usb uac" (1 in / 1 out, 48 kHz) and becomes the default
+  output; CONNECTED banner and the waveform of the host stream work (about 1000 speaker callbacks/s).
+  `CONFIG_UAC_SUPPORT_MACOS=y` is required, otherwise macOS sends audio in one short burst.
+  The microphone stream to the host is still silence.
+- HUD (top line) shows `F` frames, `A` speaker callbacks, `M` mic callbacks. A watchdog restarts the
+  device if the main loop stalls for 2 s and the bottom line then shows `STUCK S<stage> F<frame> A<cb>`.
+- A pure test tone looks frozen because the 40 ms window advances by about half a period per frame.
 
 Things that are not obvious about this board / the `espp/m5stack-cardputer` component:
 
@@ -19,8 +25,7 @@ Things that are not obvious about this board / the `espp/m5stack-cardputer` comp
 - The panel comes up colour-inverted; `screen.cpp` inverts pixels to compensate.
 - A synchronous `clear()` before the first frame is needed, otherwise the first async write never completes.
 
-Not verified yet: `uac_device_init()`/callbacks and `tud_mounted()` as the CONNECTED signal, `CONFIG_UAC_*`
-in `sdkconfig.defaults` (1 ch, 48 kHz, 16-bit, read by `main/config.hpp`).
+`CONFIG_UAC_*` in `sdkconfig.defaults` (1 ch, 48 kHz, 16-bit) is read by `main/config.hpp`.
 
 ## Build
 

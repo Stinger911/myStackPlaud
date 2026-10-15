@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "config.hpp"
+#include "debug.hpp"
 #include "m5stack-cardputer.hpp"
 
 namespace {
@@ -54,6 +55,24 @@ constexpr Glyph kGlyphs[] = {
     {'D', {0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110}},
     {'I', {0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}},
     {'S', {0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110}},
+    {'A', {0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}},
+    {'F', {0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000}},
+    {'G', {0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111}},
+    {'K', {0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001}},
+    {'M', {0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001}},
+    {'R', {0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001}},
+    {'U', {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
+    {':', {0b00000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00100, 0b00000}},
+    {'0', {0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110}},
+    {'1', {0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}},
+    {'2', {0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111}},
+    {'3', {0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110}},
+    {'4', {0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010}},
+    {'5', {0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110}},
+    {'6', {0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110}},
+    {'7', {0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000}},
+    {'8', {0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110}},
+    {'9', {0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100}},
 };
 
 void draw_char(char ch, size_t x, size_t y, size_t scale, uint16_t c) {
@@ -66,6 +85,10 @@ void draw_char(char ch, size_t x, size_t y, size_t scale, uint16_t c) {
     }
 }
 
+void draw_text_at(const char *s, size_t x, size_t y, size_t scale, uint16_t c) {
+    for (size_t i = 0; s[i]; ++i) draw_char(s[i], x + i * 6 * scale, y, scale, c);
+}
+
 void draw_text(const char *s, size_t y, size_t scale, uint16_t c) {
     size_t n = std::strlen(s);
     size_t cell = 6 * scale;  // 5 px glyph + 1 px gap
@@ -75,7 +98,8 @@ void draw_text(const char *s, size_t y, size_t scale, uint16_t c) {
 
 }  // namespace
 
-void screen_draw(bool connected, const int16_t *samples, size_t count) {
+void screen_draw(bool connected, const int16_t *samples, size_t count, const char *top_text,
+                 const char *bottom_text) {
     static size_t current = 0;
     current ^= 1;
     g_frame = g_frames[current].data();
@@ -104,8 +128,13 @@ void screen_draw(bool connected, const int16_t *samples, size_t count) {
         }
     }
 
+    if (top_text) draw_text_at(top_text, 2, kBannerHeight + 2, 1, kWhite);
+    if (bottom_text) draw_text_at(bottom_text, 2, kLcdHeight - 9, 1, kWhite);
+
     auto &cp = espp::M5StackCardputer::get();
-    for (size_t y = 0; y < kLcdHeight; y += kStripRows) {
+    for (size_t y = 0, strip = 0; y < kLcdHeight; y += kStripRows, ++strip) {
+        g_dbg_stage = 10 + strip;
         cp.write_lcd_frame(0, y, kLcdWidth, kStripRows, g_frame + y * kLcdWidth * 2);
     }
+    g_dbg_stage = 20;
 }

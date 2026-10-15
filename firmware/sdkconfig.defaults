@@ -10,3 +10,6 @@ CONFIG_UAC_MIC_CHANNEL_NUM=1
 
 # app_main draws frames; the default 3584 B main task stack is too small
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# macOS expects the 10.14 feedback format on full-speed devices; without it the host sends audio in a short burst and then starves the device
+CONFIG_UAC_SUPPORT_MACOS=y
