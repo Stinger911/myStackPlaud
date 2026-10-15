@@ -9,6 +9,7 @@
 constexpr uint32_t kUacSampleRate = CONFIG_UAC_SAMPLE_RATE;
 constexpr size_t kUacChannels = CONFIG_UAC_SPEAKER_CHANNEL_NUM;  // speaker channels sent by the host
 static_assert(CONFIG_UAC_BIT_RESOLUTION == 16, "waveform code assumes 16-bit samples");
+static_assert(CONFIG_UAC_MIC_CHANNEL_NUM == 1, "microphone path assumes a mono USB microphone");
 
 constexpr size_t kLcdWidth = 240;
 constexpr size_t kLcdHeight = 135;

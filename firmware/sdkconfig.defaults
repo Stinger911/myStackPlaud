@@ -13,3 +13,6 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # macOS expects the 10.14 feedback format on full-speed devices; without it the host sends audio in a short burst and then starves the device
 CONFIG_UAC_SUPPORT_MACOS=y
+
+# GPIO43 is both UART0 TX and the I2S word-select line of the codec; keep the UART console off in the USB-audio build
+CONFIG_ESP_CONSOLE_NONE=y

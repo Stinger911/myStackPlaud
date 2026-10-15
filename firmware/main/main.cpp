@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
@@ -25,9 +26,11 @@
 #include "tusb.h"
 #include "usb_device_uac.h"
 
+#include "audio_in.hpp"
 #include "config.hpp"
 #include "debug.hpp"
 #include "m5stack-cardputer.hpp"
+#include "sample_fifo.hpp"
 #include "sample_ring.hpp"
 #include "screen.hpp"
 
@@ -40,6 +43,11 @@ namespace {
 SampleRing<4096> g_ring;
 std::atomic<uint32_t> g_speaker_cb{0};
 std::atomic<uint32_t> g_mic_cb{0};
+std::atomic<uint32_t> g_mic_underrun{0};
+std::atomic<int> g_mic_peak{0};
+std::atomic<uint32_t> g_mic_bytes{0};
+// Device microphone -> USB microphone. About 170 ms at 48 kHz.
+SampleFifo<8192> g_mic_fifo;
 volatile int64_t g_heartbeat_us = 0;
 
 // Survive a software restart (not a power cycle) to report why the watchdog fired.
@@ -66,10 +74,27 @@ esp_err_t on_speaker_data(uint8_t *buf, size_t len, void *) {
     return ESP_OK;
 }
 
-// Device -> host audio ("me"). Step 1: silence. Real mic comes in step 2.
+// Samples from the ES8311 microphone (audio_in rx task) go into the FIFO.
+void on_mic_samples(const int16_t *s, size_t n) {
+    g_mic_bytes.fetch_add(n * sizeof(int16_t));
+    int peak = 0;
+    for (size_t i = 0; i < n; ++i) peak = std::max(peak, std::abs(static_cast<int>(s[i])));
+    if (peak > g_mic_peak.load()) g_mic_peak.store(peak);
+    g_mic_fifo.write(s, n);
+}
+
+// Device -> host audio ("me"): hand the host what the microphone captured.
 esp_err_t on_mic_data(uint8_t *buf, size_t len, size_t *bytes_read, void *) {
     g_mic_cb.fetch_add(1);
-    std::memset(buf, 0, len);
+    auto *out = reinterpret_cast<int16_t *>(buf);
+    size_t want = len / sizeof(int16_t);
+    // Keep latency low: if the host was not reading for a while, drop the stale backlog.
+    if (g_mic_fifo.available() > 4 * want) g_mic_fifo.discard(g_mic_fifo.available() - 2 * want);
+    size_t got = g_mic_fifo.read(out, want);
+    if (got < want) {
+        std::memset(out + got, 0, (want - got) * sizeof(int16_t));
+        g_mic_underrun.fetch_add(1);
+    }
     *bytes_read = len;
     return ESP_OK;
 }
@@ -126,9 +151,20 @@ extern "C" void app_main() {
     cp.display_driver()->clear(0, 0, kLcdWidth, kLcdHeight, 0xFFFF);  // inverted black
     ESP_LOGI(TAG, "Cardputer variant detected, LCD ready");
 
+    auto init_mic = [&]() {
+        ESP_LOGI(TAG, "init_mic: start");
+        if (!audio_in_start(kUacSampleRate, on_mic_samples)) {
+            ESP_LOGE(TAG, "microphone init failed");
+            std::snprintf(bottom, sizeof(bottom), "MIC INIT FAIL");
+        }
+    };
+
 #if CONFIG_MYPLAUD_SCREEN_TEST
     ESP_LOGI(TAG, "SCREEN TEST build: USB audio disabled");
+    init_mic();
 #else
+    // Microphone first: the UAC mic task starts pulling from the FIFO as soon as the host opens it.
+    init_mic();
     uac_device_config_t config = {};
     config.output_cb = on_speaker_data;
     config.input_cb = on_mic_data;
@@ -154,15 +190,23 @@ extern "C" void app_main() {
         for (size_t i = 0; i < window.size(); ++i) {
             window[i] = static_cast<int16_t>(20000.0f * sinf((i + g_frame * 16) * 0.02f));
         }
-        if (g_frame % 30 == 0) ESP_LOGI(TAG, "frame %u connected=%d", static_cast<unsigned>(g_frame), connected);
+        if (g_frame % 30 == 0)
+        {
+            AudioInStats st = audio_in_stats();
+            ESP_LOGI(TAG, "frame %u mic_bytes=%u peak=%d | i2s ok=%u err=%u last_err=%d raw_peak=%d",
+                     static_cast<unsigned>(g_frame), static_cast<unsigned>(g_mic_bytes.load()), g_mic_peak.load(),
+                     static_cast<unsigned>(st.read_ok), static_cast<unsigned>(st.read_err), st.last_err, st.raw_peak);
+        }
 #else
         bool connected = tud_mounted();
         g_dbg_stage = 2;
         g_ring.snapshot(window.data(), window.size());
 #endif
         g_dbg_stage = 3;
-        std::snprintf(top, sizeof(top), "F%u A%u M%u", static_cast<unsigned>(g_frame),
-                      static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()));
+        std::snprintf(top, sizeof(top), "F%u A%u M%u U%u L%u", static_cast<unsigned>(g_frame),
+                      static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()),
+                      static_cast<unsigned>(g_mic_underrun.load()),
+                      static_cast<unsigned>(g_mic_peak.exchange(0) / 1000));
         screen_draw(connected, window.data(), window.size(), top, bottom);
         g_frame = g_frame + 1;
         g_heartbeat_us = esp_timer_get_time();

@@ -1,0 +1,47 @@
+#pragma once
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+
+// Single-producer / single-consumer FIFO of int16 samples (N must be a power of two).
+// The producer drops what does not fit; the consumer can read or discard from the front.
+template <size_t N>
+class SampleFifo {
+    static_assert((N & (N - 1)) == 0, "N must be a power of two");
+
+public:
+    size_t write(const int16_t *in, size_t n) {
+        size_t head = head_.load(std::memory_order_relaxed);
+        size_t tail = tail_.load(std::memory_order_acquire);
+        size_t room = N - (head - tail);
+        if (n > room) n = room;
+        for (size_t i = 0; i < n; ++i) buf_[(head + i) & (N - 1)] = in[i];
+        head_.store(head + n, std::memory_order_release);
+        return n;
+    }
+
+    size_t read(int16_t *out, size_t n) {
+        size_t avail = available();
+        if (n > avail) n = avail;
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        for (size_t i = 0; i < n; ++i) out[i] = buf_[(tail + i) & (N - 1)];
+        tail_.store(tail + n, std::memory_order_release);
+        return n;
+    }
+
+    void discard(size_t n) {
+        size_t avail = available();
+        if (n > avail) n = avail;
+        tail_.store(tail_.load(std::memory_order_relaxed) + n, std::memory_order_release);
+    }
+
+    size_t available() const {
+        return head_.load(std::memory_order_acquire) - tail_.load(std::memory_order_acquire);
+    }
+
+private:
+    std::array<int16_t, N> buf_{};
+    std::atomic<size_t> head_{0};
+    std::atomic<size_t> tail_{0};
+};
