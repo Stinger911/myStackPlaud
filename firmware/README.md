@@ -6,16 +6,21 @@ audio to it, the waveform of that stream. The mic stream is silence for now.
 
 ## Status
 
-Builds cleanly with ESP-IDF v5.4 (first build, 2026-10-15). **Not run on hardware yet.**
-Behaviour on the device is unverified; in particular:
+Builds with ESP-IDF v5.4. Verified on a Cardputer ADV (2026-10-15):
 
-- `espp::M5StackCardputer::get()`, `initialize_lcd()`, `write_lcd_frame()` from
-  `espp/m5stack-cardputer` - check names and that `write_lcd_frame` works without
-  `initialize_display()`; check RGB565 byte order if colours look wrong.
-- `uac_device_init()` and its callbacks from `espressif/usb_device_uac`. Channel count and
-  sample rate are pinned in `sdkconfig.defaults` (1 ch, 48 kHz, 16-bit) and read from
-  `CONFIG_UAC_*` in `main/config.hpp`.
-- `tud_mounted()` from TinyUSB as the CONNECTED signal.
+- Screen test build (no USB audio): LCD, backlight, banner and waveform drawing work.
+- USB audio build: not yet checked on the device after the screen fixes.
+
+Things that are not obvious about this board / the `espp/m5stack-cardputer` component:
+
+- The component's LEDC backlight stays dark on the ADV; `main.cpp` drives GPIO38 directly.
+- One SPI DMA transfer is limited to 32 KiB, so a frame is sent in 27-row strips.
+- The driver byte-swaps the buffer in place, so buffers hold native RGB565 and alternate between two frames.
+- The panel comes up colour-inverted; `screen.cpp` inverts pixels to compensate.
+- A synchronous `clear()` before the first frame is needed, otherwise the first async write never completes.
+
+Not verified yet: `uac_device_init()`/callbacks and `tud_mounted()` as the CONNECTED signal, `CONFIG_UAC_*`
+in `sdkconfig.defaults` (1 ch, 48 kHz, 16-bit, read by `main/config.hpp`).
 
 ## Build
 
@@ -27,7 +32,23 @@ Requires ESP-IDF >= 5.1 (tested with v5.4: `. ~/Work/esp/esp-idf/export.sh`).
     idf.py build flash monitor
 
 If flashing fails because USB is now owned by the UAC device, hold G0 while connecting
-to enter download mode.
+to enter download mode. After flashing from download mode, release G0 and replug the cable.
+
+## Debug build variants
+
+Overlay configs, built into separate directories (not committed):
+
+    idf.py -B build-screentest -D SDKCONFIG=sdkconfig.screentest \
+        -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.screentest.defaults" build
+
+- `sdkconfig.screentest.defaults`: no USB audio, console on the native USB serial/JTAG port
+  (logs via `idf.py monitor`), fake CONNECTED toggle and a moving sine, panic goes to gdbstub.
+  This variant can be re-flashed over USB without entering download mode.
+- `sdkconfig.bootonly.defaults`: `app_main` only logs; used to bisect boot problems.
+
+Running from the Launcher is not required: flashing directly replaces Launcher in flash.
+Take a backup first: `python -m esptool --chip esp32s3 -p PORT read_flash 0 0x800000 launcher-backup.bin`
+(restore with `write_flash 0 launcher-backup.bin`).
 
 ## Next steps
 

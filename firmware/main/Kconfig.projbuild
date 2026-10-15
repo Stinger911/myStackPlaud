@@ -1,0 +1,14 @@
+menu "myPlaud"
+
+config MYPLAUD_SCREEN_TEST
+    bool "Screen test build (no USB audio)"
+    default n
+    help
+        Initialise only the LCD, draw a test pattern and log to the console.
+        Used to debug the display without the USB audio device taking the USB port.
+
+config MYPLAUD_BOOT_ONLY
+    bool "Boot-only build: app_main only logs (bisecting boot problems)"
+    default n
+
+endmenu

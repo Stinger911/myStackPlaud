@@ -15,14 +15,24 @@ constexpr uint16_t kRed = 0xF800;
 constexpr uint16_t kCyan = 0x07FF;
 constexpr uint16_t kGrey = 0x4208;
 
-// The ST7789 expects big-endian RGB565 bytes.
-std::array<uint8_t, kLcdWidth * kLcdHeight * 2> g_frame;
+// Native (little-endian) RGB565: the display driver byte-swaps the buffer in place before
+// sending, so we must not swap ourselves. Two buffers alternate because the SPI transfer
+// is asynchronous and the driver modifies the buffer it was given.
+constexpr size_t kFrameBytes = kLcdWidth * kLcdHeight * 2;
+// One DMA transfer on the ESP32-S3 is limited to 32 KiB, so the frame goes out in strips.
+constexpr size_t kStripRows = 27;
+static_assert(kLcdHeight % kStripRows == 0, "strips must tile the frame");
+static_assert(kStripRows * kLcdWidth * 2 <= 32768, "strip exceeds the SPI DMA limit");
+
+alignas(16) std::array<uint8_t, kFrameBytes> g_frames[2];
+uint8_t *g_frame = g_frames[0].data();
 
 void put(size_t x, size_t y, uint16_t c) {
     if (x >= kLcdWidth || y >= kLcdHeight) return;
     size_t i = (y * kLcdWidth + x) * 2;
-    g_frame[i] = c >> 8;
-    g_frame[i + 1] = c & 0xFF;
+    c = ~c;  // the driver leaves the panel colour-inverted; compensate here
+    g_frame[i] = c & 0xFF;
+    g_frame[i + 1] = c >> 8;
 }
 
 void fill_rect(size_t x, size_t y, size_t w, size_t h, uint16_t c) {
@@ -66,7 +76,10 @@ void draw_text(const char *s, size_t y, size_t scale, uint16_t c) {
 }  // namespace
 
 void screen_draw(bool connected, const int16_t *samples, size_t count) {
-    std::memset(g_frame.data(), 0, g_frame.size());
+    static size_t current = 0;
+    current ^= 1;
+    g_frame = g_frames[current].data();
+    std::memset(g_frame, 0xFF, kFrameBytes);  // inverted black
 
     fill_rect(0, 0, kLcdWidth, kBannerHeight, connected ? kGreen : kRed);
     draw_text(connected ? "CONNECTED" : "DISCONNECTED", (kBannerHeight - 14) / 2, 2, kWhite);
@@ -92,5 +105,7 @@ void screen_draw(bool connected, const int16_t *samples, size_t count) {
     }
 
     auto &cp = espp::M5StackCardputer::get();
-    cp.write_lcd_frame(0, 0, kLcdWidth, kLcdHeight, g_frame.data());
+    for (size_t y = 0; y < kLcdHeight; y += kStripRows) {
+        cp.write_lcd_frame(0, y, kLcdWidth, kStripRows, g_frame + y * kLcdWidth * 2);
+    }
 }

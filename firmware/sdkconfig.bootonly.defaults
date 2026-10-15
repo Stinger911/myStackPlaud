@@ -1,0 +1,4 @@
+# Overlay: bisecting build, app_main only logs
+CONFIG_MYPLAUD_BOOT_ONLY=y
+CONFIG_MYPLAUD_SCREEN_TEST=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 
+#include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -53,14 +55,33 @@ void on_volume(uint32_t volume, void *) { ESP_LOGI(TAG, "host volume=%u", static
 }  // namespace
 
 extern "C" void app_main() {
+    ESP_LOGI(TAG, "app_main: start");
+#if CONFIG_MYPLAUD_BOOT_ONLY
+    while (true) {
+        ESP_LOGI(TAG, "boot-only build alive");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
+    vTaskDelay(pdMS_TO_TICKS(2000));  // let a host open the console before anything risky runs
+    ESP_LOGI(TAG, "app_main: getting Cardputer object");
     auto &cp = espp::M5StackCardputer::get();
+    ESP_LOGI(TAG, "app_main: initialize_lcd");
     if (!cp.initialize_lcd()) {
         ESP_LOGE(TAG, "LCD init failed");
         return;
     }
-    cp.brightness(60.0f);
+    ESP_LOGI(TAG, "app_main: LCD ready, backlight on");
+    // The LEDC (PWM) backlight from espp stays dark on the ADV; driving GPIO38 directly works.
+    gpio_reset_pin(GPIO_NUM_38);
+    gpio_set_direction(GPIO_NUM_38, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_38, 1);
+    // A synchronous clear first: it drains the transaction left over from panel init.
+    cp.display_driver()->clear(0, 0, kLcdWidth, kLcdHeight, 0xFFFF);  // inverted black
     ESP_LOGI(TAG, "Cardputer variant detected, LCD ready");
 
+#if CONFIG_MYPLAUD_SCREEN_TEST
+    ESP_LOGI(TAG, "SCREEN TEST build: USB audio disabled");
+#else
     uac_device_config_t config = {};
     config.output_cb = on_speaker_data;
     config.input_cb = on_mic_data;
@@ -71,10 +92,25 @@ extern "C" void app_main() {
         ESP_LOGE(TAG, "uac_device_init failed");
         return;
     }
+#endif
 
-    std::array<int16_t, kLcdWidth * kSamplesPerColumn> window;
+    static std::array<int16_t, kLcdWidth * kSamplesPerColumn> window;  // too big for the main task stack
+    uint32_t frame = 0;
     while (true) {
+#if CONFIG_MYPLAUD_SCREEN_TEST
+        // Fake state and a moving sine so every part of the screen code is exercised.
+        bool connected = (frame / 60) % 2 == 0;
+        for (size_t i = 0; i < window.size(); ++i) {
+            window[i] = static_cast<int16_t>(20000.0f * sinf((i + frame * 16) * 0.02f));
+        }
+        if (frame % 30 == 0) ESP_LOGI(TAG, "frame %u connected=%d", static_cast<unsigned>(frame), connected);
+        ++frame;
+        screen_draw(connected, window.data(), window.size());
+        vTaskDelay(pdMS_TO_TICKS(33));
+        continue;
+#else
         bool connected = tud_mounted();
+#endif
         g_ring.snapshot(window.data(), window.size());
         screen_draw(connected, window.data(), window.size());
         vTaskDelay(pdMS_TO_TICKS(33));

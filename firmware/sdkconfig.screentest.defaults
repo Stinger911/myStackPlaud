@@ -1,0 +1,5 @@
+# Overlay for the screen-test build: no USB audio, console on the native USB serial/JTAG port
+CONFIG_MYPLAUD_SCREEN_TEST=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# Stop in gdbstub on panic instead of rebooting, so a debugger can read the backtrace over USB
+CONFIG_ESP_SYSTEM_PANIC_GDBSTUB=y
