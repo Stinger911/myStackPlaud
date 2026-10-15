@@ -28,6 +28,7 @@
 
 #include "audio.hpp"
 #include "config.hpp"
+#include "recorder.hpp"
 #include "debug.hpp"
 #include "m5stack-cardputer.hpp"
 #include "sample_fifo.hpp"
@@ -178,11 +179,20 @@ extern "C" void app_main() {
     }
 #endif
 
+    recorder_init();
+    gpio_config_t btn = {};
+    btn.pin_bit_mask = 1ULL << GPIO_NUM_0;  // G0 button: short press toggles recording
+    btn.mode = GPIO_MODE_INPUT;
+    btn.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&btn);
+    int prev_btn = 1;
+
     g_heartbeat_us = esp_timer_get_time();
     xTaskCreate(watchdog_task, "myplaud_wd", 3072, nullptr, 6, nullptr);
 
     static std::array<int16_t, kLcdWidth * kSamplesPerColumn> window;  // too big for the main task stack
     char top[48];
+    char bottom_line[96];
     while (true) {
         g_dbg_stage = 1;
 #if CONFIG_MYPLAUD_SCREEN_TEST
@@ -209,7 +219,17 @@ extern "C" void app_main() {
                       static_cast<unsigned>(g_mic_underrun.load()),
                       static_cast<unsigned>(g_mic_peak.exchange(0) / 1000),
                       static_cast<unsigned>(audio_stats().play_underrun));
-        screen_draw(connected, window.data(), window.size(), top, bottom);
+        char rec[32];
+        recorder_status(rec, sizeof(rec));
+        std::snprintf(bottom_line, sizeof(bottom_line), "%s  %s", bottom, rec);
+        int btn_level = gpio_get_level(GPIO_NUM_0);
+        if (btn_level == 0 && prev_btn == 1) recorder_toggle();
+        prev_btn = btn_level;
+#if CONFIG_MYPLAUD_SCREEN_TEST
+        // Unattended SD test: record from 5 s to 15 s after start.
+        if (g_frame == 150 || g_frame == 450) recorder_toggle();
+#endif
+        screen_draw(connected, window.data(), window.size(), top, bottom_line);
         g_frame = g_frame + 1;
         g_heartbeat_us = esp_timer_get_time();
         g_dbg_stage = 4;

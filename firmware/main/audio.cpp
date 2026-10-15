@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "recorder.hpp"
 #include "sample_fifo.hpp"
 
 namespace {
@@ -128,6 +129,7 @@ void rx_task(void *) {
             mono[i] = raw[2 * i];  // left slot carries the ADC data
         }
         if (peak > s_raw_peak.load()) s_raw_peak.store(peak);
+        recorder_feed_me(mono.data(), frames);
         if (s_mic_cb) s_mic_cb(mono.data(), frames);
     }
 }
@@ -149,12 +151,13 @@ void tx_task(void *) {
             playing = false;
             s_play_underrun.fetch_add(1);
         }
-        if (playing && !s_mute.load()) {
+        if (playing) {
             s_play_fifo.read(mono.data(), kBlock);
         } else {
-            if (playing) s_play_fifo.discard(kBlock);  // muted: keep consuming so we stay in sync
             std::fill(mono.begin(), mono.end(), 0);
         }
+        recorder_feed_others(mono.data(), kBlock);  // what the host sent, even when muted here
+        if (s_mute.load()) std::fill(mono.begin(), mono.end(), 0);
         for (size_t i = 0; i < kBlock; ++i) stereo[2 * i] = stereo[2 * i + 1] = mono[i];
         size_t written = 0;
         i2s_channel_write(s_tx, stereo.data(), stereo.size() * sizeof(int16_t), &written, portMAX_DELAY);

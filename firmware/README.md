@@ -72,3 +72,17 @@ Take a backup first: `python -m esptool --chip esp32s3 -p PORT read_flash 0 0x80
 2. Real microphone to the host (`on_mic_data` <- `initialize_microphone`).
 3. Speaker output to the 3.5 mm jack (`play_audio`).
 4. Record both streams to SD with timestamps.
+
+## SD recording
+
+Short press on G0 starts/stops a recording (bottom HUD line: `REC OFF`, `REC 0004 12S`, `NO SD`, `SD ERR`).
+Files land in `/MYPLAUD` on the microSD card: `R<nnnn>ME.WAV` (microphone), `R<nnnn>OT.WAV` (what the
+host played; zeros while the host is silent), `R<nnnn>.TXT` (metadata, written on a clean stop). Mono, s16le,
+48 kHz, 8.3 names. Both streams are fed from the I2S tasks on the same clock, so they are aligned to one
+10 ms block. WAV headers are refreshed with `fsync` every 2 s, so a recording cut by power loss stays
+playable (verified: cable pulled mid-recording, 12 s recovered, header exact).
+
+Verified 2026-10-15 with a 26 s session: the host tone came back bit-exact (amplitude 1599 of 1600), speech
+in the microphone file lined up with it, no dropped samples. Not yet verified: long sessions (SD stalls,
+USB/I2S clock drift), a real Meet/Zoom call.
+

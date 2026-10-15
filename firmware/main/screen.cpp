@@ -19,14 +19,15 @@ constexpr uint16_t kGrey = 0x4208;
 // Native (little-endian) RGB565: the display driver byte-swaps the buffer in place before
 // sending, so we must not swap ourselves. Two buffers alternate because the SPI transfer
 // is asynchronous and the driver modifies the buffer it was given.
+// (A single buffer is enough: a frame leaves in about 13 ms and the next one is built 33 ms later.)
 constexpr size_t kFrameBytes = kLcdWidth * kLcdHeight * 2;
 // One DMA transfer on the ESP32-S3 is limited to 32 KiB, so the frame goes out in strips.
 constexpr size_t kStripRows = 27;
 static_assert(kLcdHeight % kStripRows == 0, "strips must tile the frame");
 static_assert(kStripRows * kLcdWidth * 2 <= 32768, "strip exceeds the SPI DMA limit");
 
-alignas(16) std::array<uint8_t, kFrameBytes> g_frames[2];
-uint8_t *g_frame = g_frames[0].data();
+alignas(16) std::array<uint8_t, kFrameBytes> g_frame_storage;
+uint8_t *const g_frame = g_frame_storage.data();
 
 void put(size_t x, size_t y, uint16_t c) {
     if (x >= kLcdWidth || y >= kLcdHeight) return;
@@ -62,6 +63,10 @@ constexpr Glyph kGlyphs[] = {
     {'M', {0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001}},
     {'R', {0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001}},
     {'U', {0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}},
+    {'B', {0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110}},
+    {'L', {0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111}},
+    {'P', {0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000}},
+    {'H', {0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001}},
     {':', {0b00000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00100, 0b00000}},
     {'0', {0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110}},
     {'1', {0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110}},
@@ -100,9 +105,6 @@ void draw_text(const char *s, size_t y, size_t scale, uint16_t c) {
 
 void screen_draw(bool connected, const int16_t *samples, size_t count, const char *top_text,
                  const char *bottom_text) {
-    static size_t current = 0;
-    current ^= 1;
-    g_frame = g_frames[current].data();
     std::memset(g_frame, 0xFF, kFrameBytes);  // inverted black
 
     fill_rect(0, 0, kLcdWidth, kBannerHeight, connected ? kGreen : kRed);
