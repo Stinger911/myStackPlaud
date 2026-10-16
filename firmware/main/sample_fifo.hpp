@@ -62,6 +62,23 @@ public:
         return 0;
     }
 
+    // Allocates exactly 2^log2 samples; false when the memory is not available.
+    bool alloc(unsigned log2) {
+        release();
+        buf_ = static_cast<int16_t *>(heap_caps_malloc((size_t{1} << log2) * sizeof(int16_t), MALLOC_CAP_8BIT));
+        if (!buf_) return false;
+        cap_ = size_t{1} << log2;
+        return true;
+    }
+
+    void release() {
+        heap_caps_free(buf_);
+        buf_ = nullptr;
+        cap_ = 0;
+        head_.store(0);
+        tail_.store(0);
+    }
+
     size_t capacity() const { return cap_; }
 
     size_t write(const int16_t *in, size_t n) {

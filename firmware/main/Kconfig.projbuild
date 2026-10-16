@@ -26,4 +26,12 @@ config MYPLAUD_HEADER_SYNC_SECONDS
     help
         Bounds the data lost on power loss; each sync stalls the SD card for a moment.
 
+config MYPLAUD_SD_FREQ_KHZ
+    int "SD card SPI clock in kHz (falls back to 20000 when the card does not mount)"
+    range 10000 40000
+    default 40000
+    help
+        The card is tried at this clock first. 40000 is the SD high-speed rate; the mount is retried at
+        20 MHz if it fails, and the clock actually used is written to the .TXT (sd_khz).
+
 endmenu

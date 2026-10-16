@@ -84,6 +84,19 @@ host played; zeros while the host is silent), `R<nnnn>.TXT` (metadata, written o
 10 ms block. WAV headers are refreshed with `fsync` every 2 s, so a recording cut by power loss stays
 playable (verified: cable pulled mid-recording, 12 s recovered, header exact).
 
+Since 2026-10-16 (M1 diagnostics and write path):
+- The WAV header is padded to 512 bytes with a `JUNK` chunk, so the audio starts on a sector boundary
+  (`main/wav_header.hpp`, host test `test/wav_header_test.cpp`; ffprobe, ffmpeg and Python `wave` read it).
+  Writes are 4-16 KiB (a quarter of the FIFO at most), sector-aligned, from a DMA-capable buffer, through
+  plain `write()` so FATFS can send them as multi-block transfers. Older files keep their 44-byte header.
+- Both FIFOs get the same size (the biggest that fits); the SD clock is `MYPLAUD_SD_FREQ_KHZ` (default 40 MHz,
+  falls back to 20 MHz).
+- `R<nnnn>.TXT` now also has: `dropped_audible` (lost samples that were not silence, shown on the screen),
+  `dropped_me` / `dropped_others`, `drop_*=start,length,peak` (peak 0 = only silence was lost), `sd_khz`,
+  `chunk_samples`, `fifo_me_samples` / `fifo_others_samples`, heap figures at start-up, `drain_max_ms`,
+  `writer_late_max_ms` (large with fast writes = the writer task was starved, not the card) and up to 32
+  `slow_sec=` lines (seconds with a slow write, late wake-up, a filling FIFO or any loss).
+
 Verified 2026-10-15 with a 26 s session: the host tone came back bit-exact (amplitude 1599 of 1600), speech
 in the microphone file lined up with it, no dropped samples. Not yet verified: long sessions (SD stalls,
 USB/I2S clock drift), a real Meet/Zoom call.

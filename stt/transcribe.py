@@ -58,7 +58,7 @@ def find_pair(arg: str | None, directory: Path | None) -> tuple[Path, Path, str]
         for d in search:
             for p in d.glob("R[0-9][0-9][0-9][0-9]ME.WAV"):
                 ot = p.with_name(p.name.replace("ME.WAV", "OT.WAV"))
-                if ot.exists() and p.stat().st_size > 44 and ot.stat().st_size > 44:
+                if ot.exists() and p.stat().st_size > 512 and ot.stat().st_size > 512:
                     found[p.name[:5]] = (p, ot)
         if not found:
             raise SystemExit("no recordings found; pass a session name like R0004 or --dir")
