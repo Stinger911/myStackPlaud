@@ -101,3 +101,8 @@ Verified 2026-10-15 with a 26 s session: the host tone came back bit-exact (ampl
 in the microphone file lined up with it, no dropped samples. Not yet verified: long sessions (SD stalls,
 USB/I2S clock drift), a real Meet/Zoom call.
 
+## Keyboard (M4)
+- `keyboard.cpp` reads the TCA8418 (0x34) on the codec's I2C bus; the espp keyboard driver is not used because it opens the same I2C port itself. Decoding, key map, actions and auto-repeat are in `keys.hpp` (host test `test/keys_test.cpp`).
+- `Tab`: status / debug view (an error screen always returns to status). `+` / `=` and `-`: headphone level 0..10, 3 dB per step below the host volume (`volume.hpp`, host test `test/volume_test.cpp`), auto-repeat on hold, 1.5 s overlay, stored in NVS after the overlay has gone. Level 0 mutes playback only; ME and OT recordings are unaffected.
+- `F` is decoded and logged, file mode is not implemented yet. Not done: the 1 kHz volume tick, the `HOST MUTE` overlay.
+

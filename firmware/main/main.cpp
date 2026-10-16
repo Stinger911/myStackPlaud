@@ -31,6 +31,9 @@
 #include "recorder.hpp"
 #include "debug.hpp"
 #include "g0_button.hpp"
+#include "keyboard.hpp"
+#include "settings.hpp"
+#include "volume.hpp"
 #include "m5stack-cardputer.hpp"
 #include "sample_fifo.hpp"
 #include "sample_ring.hpp"
@@ -158,6 +161,9 @@ extern "C" void app_main() {
     cp.display_driver()->clear(0, 0, kLcdWidth, kLcdHeight, 0xFFFF);  // inverted black
     ESP_LOGI(TAG, "Cardputer variant detected, LCD ready");
 
+    settings_init();
+    audio_set_level(settings_volume(kVolumeMax));  // applied to the codec once audio_start() has set it up
+
     auto init_mic = [&]() {
         ESP_LOGI(TAG, "init_mic: start");
         if (!audio_start(kUacSampleRate, on_mic_samples)) {
@@ -184,6 +190,10 @@ extern "C" void app_main() {
     }
 #endif
 
+    if (!keyboard_start(audio_i2c_bus())) {
+        ESP_LOGE(TAG, "keyboard init failed");
+        std::snprintf(bottom, sizeof(bottom), "KEYBOARD FAIL");
+    }
     recorder_init();
     gpio_config_t btn = {};
     btn.pin_bit_mask = 1ULL << GPIO_NUM_0;  // G0 button: short press starts, 1 s hold stops (g0_button.hpp)
@@ -200,12 +210,15 @@ extern "C" void app_main() {
     char dbg_recorder[48];
     char dbg_boot[96];
     int64_t last_sound_us = 0;  // last time the host stream was louder than the silence threshold
-    // The debug view replaces the status view until the keyboard (Tab) is wired up.
+    // Tab toggles the debug view; the screentest build starts in it.
 #if CONFIG_MYPLAUD_SCREEN_TEST
-    const bool debug_view = true;
+    bool debug_view = true;
 #else
-    const bool debug_view = false;
+    bool debug_view = false;
 #endif
+    constexpr int64_t kVolumeOverlayUs = 1'500'000;
+    int64_t volume_overlay_until_us = 0;  // the volume bar is shown until then
+    bool volume_unsaved = false;          // NVS is written once the overlay has gone, not on every step
     while (true) {
         g_dbg_stage = 1;
 #if CONFIG_MYPLAUD_SCREEN_TEST
@@ -239,7 +252,29 @@ extern "C" void app_main() {
         else if (rec.state == RecorderState::Starting || rec.state == RecorderState::Stopping) g0_ctx = G0Context::Busy;
         G0Output g0_out = g0.update(gpio_get_level(GPIO_NUM_0) == 0, g0_ctx, static_cast<uint32_t>(now_us / 1000));
         if (g0_out.event != G0Event::None) recorder_toggle();  // Start (idle) or Stop (after the hold)
+        for (KeyAction a = keyboard_next(); a != KeyAction::None; a = keyboard_next()) {
+            switch (a) {
+                case KeyAction::ToggleDebug: debug_view = !debug_view; break;
+                case KeyAction::VolumeUp:
+                case KeyAction::VolumeDown: {
+                    int level = volume_clamp(audio_level() + (a == KeyAction::VolumeUp ? 1 : -1));
+                    if (level != audio_level()) {
+                        audio_set_level(level);
+                        volume_unsaved = true;
+                    }
+                    volume_overlay_until_us = now_us + kVolumeOverlayUs;
+                    break;
+                }
+                case KeyAction::ToggleFiles: ESP_LOGI(TAG, "F: file mode is not implemented yet (R4.5)"); break;
+                default: break;
+            }
+        }
+        if (volume_unsaved && now_us > volume_overlay_until_us) {
+            settings_set_volume(audio_level());
+            volume_unsaved = false;
+        }
         ScreenModel model;
+        model.volume = now_us < volume_overlay_until_us ? static_cast<int8_t>(audio_level()) : -1;
         model.link = connected ? Link::UsbAudio : Link::Off;
         model.host_sound = connected && (now_us - last_sound_us) < kSilenceAfterUs;
         model.level_me = level_from_peak(me_peak);
@@ -262,6 +297,8 @@ extern "C" void app_main() {
         // SD space and battery are not measured yet: the footer shows "SD --" and the battery is hidden.
         if (std::strcmp(bottom, "BOOT OK") != 0) model.notice = bottom;  // watchdog report, init failures
 
+        // An error always brings the status view back (the debug view cannot show it).
+        if (model.mode == Mode::NoSd || model.mode == Mode::SdError) debug_view = false;
         model.debug_view = debug_view;
         std::snprintf(dbg_counters, sizeof(dbg_counters), "F%u A%u M%u U%u P%u", static_cast<unsigned>(g_frame),
                       static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()),

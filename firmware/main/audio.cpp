@@ -13,6 +13,7 @@
 
 #include "recorder.hpp"
 #include "sample_fifo.hpp"
+#include "volume.hpp"
 
 namespace {
 
@@ -39,7 +40,10 @@ constexpr size_t kTrimAbove = 10 * kBlock; // 100 ms backlog: drop the oldest do
 
 i2s_chan_handle_t s_tx = nullptr;
 i2s_chan_handle_t s_rx = nullptr;
+i2c_master_bus_handle_t s_bus = nullptr;
 i2c_master_dev_handle_t s_codec = nullptr;
+int s_host_reg = kDacRegStart;            // DAC register the host volume asks for (kDacRegStart until it sets one)
+std::atomic<int> s_level{kVolumeMax};  // device headphone level 0..10
 MicSamplesCb s_mic_cb = nullptr;
 
 SampleFifo<8192> s_play_fifo;
@@ -59,6 +63,11 @@ bool codec_write(uint8_t reg, uint8_t value) {
     return err == ESP_OK;
 }
 
+void apply_dac_volume() {
+    if (!s_codec) return;
+    codec_write(0x32, static_cast<uint8_t>(volume_dac_reg(s_host_reg, s_level.load())));
+}
+
 bool codec_init() {
     i2c_master_bus_config_t bus_cfg = {};
     bus_cfg.i2c_port = I2C_NUM_0;
@@ -67,8 +76,7 @@ bool codec_init() {
     bus_cfg.clk_source = I2C_CLK_SRC_DEFAULT;
     bus_cfg.glitch_ignore_cnt = 7;
     bus_cfg.flags.enable_internal_pullup = true;
-    i2c_master_bus_handle_t bus = nullptr;
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &bus);
+    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2c_new_master_bus: %s", esp_err_to_name(err));
         return false;
@@ -77,7 +85,7 @@ bool codec_init() {
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
     dev_cfg.device_address = kEs8311Addr;
     dev_cfg.scl_speed_hz = 400000;
-    err = i2c_master_bus_add_device(bus, &dev_cfg, &s_codec);
+    err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_codec);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2c add device: %s", esp_err_to_name(err));
         return false;
@@ -104,6 +112,7 @@ bool codec_init() {
     for (const auto &e : seq) {
         if (!codec_write(e[0], e[1])) return false;
     }
+    apply_dac_volume();
     ESP_LOGI(TAG, "ES8311 configured");
     return true;
 }
@@ -157,7 +166,7 @@ void tx_task(void *) {
             std::fill(mono.begin(), mono.end(), 0);
         }
         recorder_feed_others(mono.data(), kBlock);  // what the host sent, even when muted here
-        if (s_mute.load()) std::fill(mono.begin(), mono.end(), 0);
+        if (s_mute.load() || s_level.load() == 0) std::fill(mono.begin(), mono.end(), 0);
         for (size_t i = 0; i < kBlock; ++i) stereo[2 * i] = stereo[2 * i + 1] = mono[i];
         size_t written = 0;
         i2s_channel_write(s_tx, stereo.data(), stereo.size() * sizeof(int16_t), &written, portMAX_DELAY);
@@ -203,10 +212,18 @@ bool audio_start(uint32_t sample_rate, MicSamplesCb mic_cb) {
 void audio_play(const int16_t *samples, size_t count) { s_play_fifo.write(samples, count); }
 
 void audio_set_host_volume(uint32_t volume) {
-    if (!s_codec) return;
-    uint32_t reg = std::min<uint32_t>(kDacRegAtHost0 + std::min<uint32_t>(volume, 100), kDacRegMax);
-    codec_write(0x32, static_cast<uint8_t>(reg));
+    s_host_reg = static_cast<int>(std::min<uint32_t>(kDacRegAtHost0 + std::min<uint32_t>(volume, 100), kDacRegMax));
+    apply_dac_volume();
 }
+
+void audio_set_level(int level) {
+    s_level.store(volume_clamp(level));
+    apply_dac_volume();
+}
+
+int audio_level() { return s_level.load(); }
+
+i2c_master_bus_handle_t audio_i2c_bus() { return s_bus; }
 
 void audio_set_mute(bool mute) { s_mute.store(mute); }
 

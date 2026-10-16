@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "driver/i2c_master.h"
+
 // Audio of the Cardputer ADV: ES8311 codec on the internal I2C bus, one full-duplex I2S bus.
 // Own setup (the espp audio code delivered no microphone data on this board and hides errors).
 //
@@ -17,6 +19,14 @@ void audio_play(const int16_t *samples, size_t count);
 // Host controls. `volume` is 0..100 (0 = -50 dB, 100 = 0 dB, as delivered by usb_device_uac).
 void audio_set_host_volume(uint32_t volume);
 void audio_set_mute(bool mute);
+
+// Device headphone level 0..10 (0 = mute, 10 = the DAC cap), 3 dB per step below the host's volume.
+// Only the playback path: the ME and OT recordings do not see it. Call before audio_start() to set the start level.
+void audio_set_level(int level);
+int audio_level();
+
+// The internal I2C bus (ES8311 at 0x18, keyboard controller at 0x34); valid after audio_start().
+i2c_master_bus_handle_t audio_i2c_bus();
 
 struct AudioStats {
     uint32_t read_ok;       // successful microphone reads
