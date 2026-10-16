@@ -75,7 +75,9 @@ Take a backup first: `python -m esptool --chip esp32s3 -p PORT read_flash 0 0x80
 
 ## SD recording
 
-Short press on G0 starts/stops a recording (bottom HUD line: `REC OFF`, `REC 0004 12S`, `NO SD`, `SD ERR`).
+Short press on G0 starts a recording; stopping needs a 1 s hold (progress ring and `HOLD TO STOP`; releasing earlier
+cancels, and a short press while recording only shows the hint). Logic in `main/g0_button.hpp`, host test in
+`test/g0_button_test.cpp`. The screen shows `READY`, `REC` with the elapsed time, `NO SD CARD`, `SD WRITE ERROR`.
 Files land in `/MYPLAUD` on the microSD card: `R<nnnn>ME.WAV` (microphone), `R<nnnn>OT.WAV` (what the
 host played; zeros while the host is silent), `R<nnnn>.TXT` (metadata, written on a clean stop). Mono, s16le,
 48 kHz, 8.3 names. Both streams are fed from the I2S tasks on the same clock, so they are aligned to one

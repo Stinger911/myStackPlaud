@@ -30,6 +30,7 @@
 #include "config.hpp"
 #include "recorder.hpp"
 #include "debug.hpp"
+#include "g0_button.hpp"
 #include "m5stack-cardputer.hpp"
 #include "sample_fifo.hpp"
 #include "sample_ring.hpp"
@@ -185,11 +186,11 @@ extern "C" void app_main() {
 
     recorder_init();
     gpio_config_t btn = {};
-    btn.pin_bit_mask = 1ULL << GPIO_NUM_0;  // G0 button: short press toggles recording
+    btn.pin_bit_mask = 1ULL << GPIO_NUM_0;  // G0 button: short press starts, 1 s hold stops (g0_button.hpp)
     btn.mode = GPIO_MODE_INPUT;
     btn.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&btn);
-    int prev_btn = 1;
+    G0Button g0;
 
     g_heartbeat_us = esp_timer_get_time();
     xTaskCreate(watchdog_task, "myplaud_wd", 3072, nullptr, 6, nullptr);
@@ -233,6 +234,11 @@ extern "C" void app_main() {
         if (ot_peak > kSoundThreshold) last_sound_us = now_us;
 
         RecorderInfo rec = recorder_info();
+        G0Context g0_ctx = G0Context::Idle;
+        if (rec.state == RecorderState::Recording) g0_ctx = G0Context::Recording;
+        else if (rec.state == RecorderState::Starting || rec.state == RecorderState::Stopping) g0_ctx = G0Context::Busy;
+        G0Output g0_out = g0.update(gpio_get_level(GPIO_NUM_0) == 0, g0_ctx, static_cast<uint32_t>(now_us / 1000));
+        if (g0_out.event != G0Event::None) recorder_toggle();  // Start (idle) or Stop (after the hold)
         ScreenModel model;
         model.link = connected ? Link::UsbAudio : Link::Off;
         model.host_sound = connected && (now_us - last_sound_us) < kSilenceAfterUs;
@@ -243,7 +249,9 @@ extern "C" void app_main() {
         model.drops = rec.drops;
         switch (rec.state) {
             case RecorderState::Recording:
-                model.mode = Mode::Recording;
+                model.mode = g0_out.holding ? Mode::Stopping : Mode::Recording;
+                model.hold_progress = g0_out.hold_progress;
+                model.stop_hint = g0_out.hint;
                 if (rec.drops) model.warning = Warning::Drop;
                 break;
             case RecorderState::Stopping: model.mode = Mode::Saving; break;
@@ -266,9 +274,6 @@ extern "C" void app_main() {
         model.samples = window.data();
         model.sample_count = window.size();
 
-        int btn_level = gpio_get_level(GPIO_NUM_0);
-        if (btn_level == 0 && prev_btn == 1) recorder_toggle();
-        prev_btn = btn_level;
 #if CONFIG_MYPLAUD_SCREEN_TEST
         // Unattended SD test: record from 5 s to 15 s after start.
         if (g_frame == 150 || g_frame == 450) recorder_toggle();

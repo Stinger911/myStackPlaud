@@ -325,9 +325,13 @@ void draw_recording(const ScreenModel &m, uint32_t now_ms) {
         draw_text("HOLD TO STOP", 32, 34, 2, kWhite);
     } else {
         fill_circle(16, 41, 6, (now_ms / 500) % 2 == 0 ? kRed : kDarkRed);
-        draw_text("REC", 30, 34, 2, kRed);
-        Slot s = status_slot(m);
-        draw_text(s.text, 232, 34, 2, s.colour, Align::Right);
+        if (m.stop_hint) {
+            draw_text("HOLD TO STOP", 30, 34, 2, kWhite);
+        } else {
+            draw_text("REC", 30, 34, 2, kRed);
+            Slot s = status_slot(m);
+            draw_text(s.text, 232, 34, 2, s.colour, Align::Right);
+        }
     }
     char t[16];
     format_elapsed(m.elapsed_s, t, sizeof(t));

@@ -35,6 +35,7 @@ struct ScreenModel {
 
     bool host_sound = false;     // host audio present (SOUND) or not (SILENCE)
     float hold_progress = 0.0f;  // 0..1 while mode == Stopping
+    bool stop_hint = false;      // show "HOLD TO STOP" (short press while recording)
 
     uint32_t session = 0;     // R<nnnn>
     uint32_t elapsed_s = 0;   // recording time
