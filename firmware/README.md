@@ -89,7 +89,7 @@ Since 2026-10-16 (M1 diagnostics and write path):
   (`main/wav_header.hpp`, host test `test/wav_header_test.cpp`; ffprobe, ffmpeg and Python `wave` read it).
   Writes are 4-16 KiB (a quarter of the FIFO at most), sector-aligned, from a DMA-capable buffer, through
   plain `write()` so FATFS can send them as multi-block transfers. Older files keep their 44-byte header.
-- Both FIFOs get the same size (the biggest that fits); the SD clock is `MYPLAUD_SD_FREQ_KHZ` (default 40 MHz,
+- Both FIFOs get the same size (the biggest that fits); the SD clock is `MYPLAUD_SD_FREQ_KHZ` (default 20 MHz; 40 MHz is opt-in, it did not mount on the test card,
   falls back to 20 MHz).
 - `R<nnnn>.TXT` now also has: `dropped_audible` (lost samples that were not silence, shown on the screen),
   `dropped_me` / `dropped_others`, `drop_*=start,length,peak` (peak 0 = only silence was lost), `sd_khz`,

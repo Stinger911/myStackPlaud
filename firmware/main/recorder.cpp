@@ -339,7 +339,7 @@ struct Telemetry {
         uint32_t me_cap = std::max<size_t>(1, s_me.fifo.capacity()), ot_cap = std::max<size_t>(1, s_ot.fifo.capacity());
         uint32_t me_pct = me_hw * 100 / me_cap, ot_pct = ot_hw * 100 / ot_cap;
         uint32_t lost = s_drops.load() - lost_at_start;
-        bool slow = write_ms >= 50 || late_ms >= 60 || drain_ms >= 150 || me_pct >= 25 || ot_pct >= 25 || lost > 0;
+        bool slow = write_ms >= 50 || late_ms >= 60 || drain_ms >= 150 || me_pct >= 60 || ot_pct >= 60 || lost > 0;
         if (slow) {
             if (s_slow_count < kMaxSlow)
                 s_slow[s_slow_count] = {static_cast<uint32_t>((now - s_start_us) / 1'000'000),
@@ -357,6 +357,7 @@ struct Telemetry {
 
 void writer_task(void *) {
     int64_t last_header_us = 0;
+    bool header_me_next = true;
     Telemetry tel;
     while (true) {
         int64_t before = esp_timer_get_time();
@@ -392,9 +393,12 @@ void writer_task(void *) {
         tel.bytes += s_bytes_me + s_bytes_ot - bytes_before;
         tel.tick(now);
 
-        if (now - last_header_us > kHeaderUpdateUs) {  // keep the files valid if power is lost
+        // Keep the files valid if power is lost. One file per round, alternating: an fsync of both at once
+        // stalled the writer for ~450 ms, almost the whole FIFO.
+        if (now - last_header_us > kHeaderUpdateUs / 2) {
             last_header_us = now;
-            bool ok = write_wav_header(s_fd_me, s_bytes_me) && write_wav_header(s_fd_ot, s_bytes_ot);
+            bool ok = header_me_next ? write_wav_header(s_fd_me, s_bytes_me) : write_wav_header(s_fd_ot, s_bytes_ot);
+            header_me_next = !header_me_next;
             note_latency(esp_timer_get_time() - now, s_sync_max_ms);
             if (!ok) stop_session(true);
         }
