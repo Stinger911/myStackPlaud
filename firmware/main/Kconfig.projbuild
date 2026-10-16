@@ -11,4 +11,19 @@ config MYPLAUD_BOOT_ONLY
     bool "Boot-only build: app_main only logs (bisecting boot problems)"
     default n
 
+config MYPLAUD_FIFO_LOG2
+    int "Recorder FIFO size per stream, log2 of samples (16 = 65536 samples = 1.4 s at 48 kHz)"
+    range 13 17
+    default 16
+    help
+        The recorder keeps this much audio per stream while the SD card is busy. Falls back to
+        smaller sizes when the RAM is not available (the size is logged and written to the .TXT).
+
+config MYPLAUD_HEADER_SYNC_SECONDS
+    int "Seconds between WAV header rewrites with fsync"
+    range 1 120
+    default 10
+    help
+        Bounds the data lost on power loss; each sync stalls the SD card for a moment.
+
 endmenu
