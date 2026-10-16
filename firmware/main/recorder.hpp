@@ -17,5 +17,15 @@ void recorder_feed_others(const int16_t *samples, size_t count);
 // Short status for the screen, e.g. "REC OFF", "REC 0003 45S", "NO SD".
 void recorder_status(char *out, size_t out_size);
 
+// Structured state for the screen (see screen.hpp). `session` is the current or last session.
+enum class RecorderState : uint8_t { Idle, Starting, Recording, Stopping, NoSd, WriteError };
+struct RecorderInfo {
+    RecorderState state;
+    uint32_t session;
+    uint32_t elapsed_s;  // length of the microphone stream so far
+    uint32_t drops;      // lost samples in the current session
+};
+RecorderInfo recorder_info();
+
 // Start the writer task. Call once.
 void recorder_init();

@@ -37,6 +37,10 @@
 
 static const char *TAG = "myplaud";
 
+// Host stream level below which it counts as silence, and how long it must stay quiet to show SILENCE.
+constexpr int kSoundThreshold = 100;  // about -50 dBFS
+constexpr int64_t kSilenceAfterUs = 3'000'000;
+
 volatile uint32_t g_dbg_stage = 0;
 
 namespace {
@@ -191,8 +195,16 @@ extern "C" void app_main() {
     xTaskCreate(watchdog_task, "myplaud_wd", 3072, nullptr, 6, nullptr);
 
     static std::array<int16_t, kLcdWidth * kSamplesPerColumn> window;  // too big for the main task stack
-    char top[48];
-    char bottom_line[96];
+    char dbg_counters[48];
+    char dbg_recorder[48];
+    char dbg_boot[96];
+    int64_t last_sound_us = 0;  // last time the host stream was louder than the silence threshold
+    // The debug view replaces the status view until the keyboard (Tab) is wired up.
+#if CONFIG_MYPLAUD_SCREEN_TEST
+    const bool debug_view = true;
+#else
+    const bool debug_view = false;
+#endif
     while (true) {
         g_dbg_stage = 1;
 #if CONFIG_MYPLAUD_SCREEN_TEST
@@ -214,14 +226,46 @@ extern "C" void app_main() {
         g_ring.snapshot(window.data(), window.size());
 #endif
         g_dbg_stage = 3;
-        std::snprintf(top, sizeof(top), "F%u A%u M%u U%u L%u P%u", static_cast<unsigned>(g_frame),
+        int me_peak = g_mic_peak.exchange(0);
+        int ot_peak = 0;
+        for (int16_t s : window) ot_peak = std::max(ot_peak, std::abs(static_cast<int>(s)));
+        int64_t now_us = esp_timer_get_time();
+        if (ot_peak > kSoundThreshold) last_sound_us = now_us;
+
+        RecorderInfo rec = recorder_info();
+        ScreenModel model;
+        model.link = connected ? Link::UsbAudio : Link::Off;
+        model.host_sound = connected && (now_us - last_sound_us) < kSilenceAfterUs;
+        model.level_me = level_from_peak(me_peak);
+        model.level_ot = level_from_peak(ot_peak);
+        model.session = rec.session;
+        model.elapsed_s = rec.elapsed_s;
+        model.drops = rec.drops;
+        switch (rec.state) {
+            case RecorderState::Recording:
+                model.mode = Mode::Recording;
+                if (rec.drops) model.warning = Warning::Drop;
+                break;
+            case RecorderState::Stopping: model.mode = Mode::Saving; break;
+            case RecorderState::NoSd: model.mode = Mode::NoSd; break;
+            case RecorderState::WriteError: model.mode = Mode::SdError; break;
+            default: model.mode = Mode::Ready; break;
+        }
+        // SD space and battery are not measured yet: the footer shows "SD --" and the battery is hidden.
+        if (std::strcmp(bottom, "BOOT OK") != 0) model.notice = bottom;  // watchdog report, init failures
+
+        model.debug_view = debug_view;
+        std::snprintf(dbg_counters, sizeof(dbg_counters), "F%u A%u M%u U%u P%u", static_cast<unsigned>(g_frame),
                       static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()),
-                      static_cast<unsigned>(g_mic_underrun.load()),
-                      static_cast<unsigned>(g_mic_peak.exchange(0) / 1000),
-                      static_cast<unsigned>(audio_stats().play_underrun));
-        char rec[32];
-        recorder_status(rec, sizeof(rec));
-        std::snprintf(bottom_line, sizeof(bottom_line), "%s  %s", bottom, rec);
+                      static_cast<unsigned>(g_mic_underrun.load()), static_cast<unsigned>(audio_stats().play_underrun));
+        recorder_status(dbg_recorder, sizeof(dbg_recorder));
+        std::snprintf(dbg_boot, sizeof(dbg_boot), "%s  ME %d OT %d", bottom, me_peak, ot_peak);
+        model.debug_lines[0] = dbg_counters;
+        model.debug_lines[1] = dbg_recorder;
+        model.debug_lines[2] = dbg_boot;
+        model.samples = window.data();
+        model.sample_count = window.size();
+
         int btn_level = gpio_get_level(GPIO_NUM_0);
         if (btn_level == 0 && prev_btn == 1) recorder_toggle();
         prev_btn = btn_level;
@@ -229,7 +273,7 @@ extern "C" void app_main() {
         // Unattended SD test: record from 5 s to 15 s after start.
         if (g_frame == 150 || g_frame == 450) recorder_toggle();
 #endif
-        screen_draw(connected, window.data(), window.size(), top, bottom_line);
+        screen_draw(model, static_cast<uint32_t>(now_us / 1000));
         g_frame = g_frame + 1;
         g_heartbeat_us = esp_timer_get_time();
         g_dbg_stage = 4;

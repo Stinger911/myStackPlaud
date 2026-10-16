@@ -325,6 +325,22 @@ void recorder_toggle() { s_toggle.store(true); }
 void recorder_feed_me(const int16_t *samples, size_t count) { feed(s_me, samples, count); }
 void recorder_feed_others(const int16_t *samples, size_t count) { feed(s_ot, samples, count); }
 
+RecorderInfo recorder_info() {
+    RecorderInfo info{};
+    switch (s_state.load()) {
+        case kStarting: info.state = RecorderState::Starting; break;
+        case kRecording: info.state = RecorderState::Recording; break;
+        case kStopping: info.state = RecorderState::Stopping; break;
+        case kErrNoSd: info.state = RecorderState::NoSd; break;
+        case kErrWrite: info.state = RecorderState::WriteError; break;
+        default: info.state = RecorderState::Idle; break;
+    }
+    info.session = s_session.load();
+    info.elapsed_s = s_me_samples.load() / kUacSampleRate;
+    info.drops = s_drops.load();
+    return info;
+}
+
 void recorder_status(char *out, size_t out_size) {
     switch (s_state.load()) {
         case kIdle: std::snprintf(out, out_size, "REC OFF"); break;

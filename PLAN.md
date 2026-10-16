@@ -14,6 +14,7 @@
 | Local STT with speaker labels | Done for RU (`stt/transcribe.py`, whisper.cpp + Silero VAD) |
 | Real Zoom call, 32 min (R0007) | Works end to end, but 11.5 s of samples dropped, ~30 min to transcribe |
 | Runs from M5Stack Launcher | Works (image from SD `/downloads`) |
+| Device screen UX (M4) | Designed (spec v2); screen refactor in progress |
 | PL / EN / mixed speech | Not tested |
 | Phone as host | Not tested |
 | Remote ASR fallback, summary, Obsidian note | Not started |
@@ -44,10 +45,16 @@ Goal: insert card, get a transcript; no manual commands.
 - Acceptance: card inserted -> notification -> `.md` in iCloud within the M2 time budget.
 
 ### M4. Device UX
-- HUD: clear "sound playing / silence", REC state, drop warning, elapsed time and free SD space.
-- Low-space and no-card warnings; clean stop on low battery.
-- Decide if USB-C power during use (battery charging) works; check composite audio + serial feasibility (intent open question).
-- Cleanup tooling: remove empty leftover files (`R0001*`, `R0003*`), old test images on the card.
+Spec: `specs/M4-device-ux.md` (v2, 2026-10-16, screen design agreed).
+Goal: the screen tells the truth and the device fails visibly; one-glance state from half a metre.
+- Screen redesign: header (one link indicator `USB AUDIO` / `BT AUDIO` (reserved) / `USB FILES` / `LINK OFF`, battery), status row (REC, SOUND/SILENCE/NO HOST, warnings), 40 px elapsed time, ME/OT levels, footer (session, SD time left, drops). Debug HUD moves under `Tab`.
+- Stop by 1 s hold of G0 (short press only starts); short press while recording shows `HOLD TO STOP`.
+- States S0-S11 incl. NO SD, SD ERROR, LOW SPACE, DROP, CARD LOST, LOW BATTERY, LINK LOST; emergency stops close files validly first.
+- Beeps on start/stop/warnings (DAC only, never into ME); headphone volume with `+` / `-` (11 levels, ceiling at the current -20 dB cap, NVS).
+- File mode (`F`): SD card exposed to the computer as a USB disk, from READY only.
+- Power (battery while USB audio is active, runtime), composite USB feasibility (audio + serial, audio + disk), card housekeeping.
+- Order (see spec): 1 screen refactor into zones + state model (started 2026-10-16), 2 data sources (levels, SD space, battery, drops), 3 normal states + stop by hold, 4 emergency states with fixtures, 5 volume, 6 link indicator + file mode after the composite-USB decision, 7 photos in `firmware/README.md`.
+- Acceptance: A1-A7 in the spec.
 
 ### M5. Other scenarios
 - Phone (Android/iPhone) as USB host for calls: adapter, enumeration, volume/mute behaviour.
