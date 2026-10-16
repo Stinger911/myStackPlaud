@@ -220,6 +220,8 @@ constexpr ModeStyle kStyles[] = {
     {Mode::NoSd, kRed, "NO SD CARD"},
     {Mode::SdError, kRed, "SD WRITE ERROR"},
     {Mode::CardLost, kRed, "CARD REMOVED"},
+    {Mode::SdFull, kRed, "SD FULL"},
+    {Mode::BatteryStop, kRed, "BATTERY LOW"},
 };
 
 const ModeStyle &style_of(Mode m) {
@@ -383,7 +385,9 @@ void draw_centre(const ScreenModel &m, uint32_t now_ms) {
             break;
         case Mode::NoSd: draw_message("INSERT CARD", 3, kWhite, "RECORDING OFF", nullptr); break;
         case Mode::SdError:
-        case Mode::CardLost: {
+        case Mode::CardLost:
+        case Mode::SdFull:
+        case Mode::BatteryStop: {
             char elapsed[16], saved[40];
             format_elapsed(m.elapsed_s, elapsed, sizeof(elapsed));
             std::snprintf(saved, sizeof(saved), "SAVED UP TO %s", elapsed);
@@ -420,8 +424,8 @@ void draw_footer(const ScreenModel &m) {
     }
     std::snprintf(buf, sizeof(buf), "R%04u", static_cast<unsigned>(m.session));
     draw_text(buf, 8, kFooterTextY, 2, kWhite);
-    if (m.mode == Mode::NoSd || m.mode == Mode::SdError) {
-        draw_text(m.mode == Mode::NoSd ? "SD --" : "SD ERR", 232, kFooterTextY, 2, kRed, Align::Right);
+    if (m.mode == Mode::NoSd || m.mode == Mode::SdError || m.mode == Mode::CardLost) {
+        draw_text(m.mode == Mode::SdError ? "SD ERR" : "SD --", 232, kFooterTextY, 2, kRed, Align::Right);
         return;
     }
     format_sd(m.sd_minutes, buf, sizeof(buf), m.drops == 0);

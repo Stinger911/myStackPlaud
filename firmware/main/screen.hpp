@@ -23,6 +23,8 @@ enum class Mode : uint8_t {
     NoSd,       // S5
     SdError,    // S6
     CardLost,   // S9
+    SdFull,     // S7 after the stop: the card has less than 5 minutes left
+    BatteryStop,  // S10 after the stop
 };
 
 // Warnings shown in the status row while recording (S7, S8, S10).

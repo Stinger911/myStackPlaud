@@ -22,6 +22,7 @@
 #include "sdmmc_cmd.h"
 
 #include "config.hpp"
+#include "power_policy.hpp"
 #include "sample_fifo.hpp"
 #include "wav_header.hpp"
 
@@ -48,11 +49,24 @@ constexpr unsigned kMinFifoLog2 = 13;
 constexpr int64_t kHeaderUpdateUs = CONFIG_MYPLAUD_HEADER_SYNC_SECONDS * 1'000'000LL;
 constexpr size_t kMaxEvents = 32;
 constexpr size_t kMaxSlow = 32;
+constexpr int64_t kCardPollUs = 2'000'000;  // idle: card inserted or removed?
+constexpr int64_t kSpacePollUs = 5'000'000;  // recording: free space
 constexpr int64_t kSlowUs = 200'000;  // an SD operation slower than this counts as a stall
 constexpr int16_t kSilentPeak = 8;    // lost samples this quiet count as lost silence, not lost audio
 constexpr uint32_t kWriterTickMs = 20;
 
-enum State { kIdle, kStarting, kRecording, kStopping, kErrNoSd, kErrWrite };
+// kErrNoSd is "no card" (also while idle, it clears by itself when a card is inserted); the other errors
+// stay until G0 acknowledges them.
+enum State { kIdle, kStarting, kRecording, kStopping, kErrNoSd, kErrWrite, kErrCardLost, kErrSdFull, kErrBattery };
+enum class StopReason : int { None = 0, Normal, WriteError, SdFull, Battery };
+const char *stop_reason_name(StopReason r) {
+    switch (r) {
+        case StopReason::WriteError: return "write_error";
+        case StopReason::SdFull: return "sd_full";
+        case StopReason::Battery: return "battery";
+        default: return "normal";
+    }
+}
 
 // A span of samples that did not fit in the FIFO; it is replaced by zeros to keep the timeline.
 struct DropEvent {
@@ -110,6 +124,12 @@ size_t s_heap_free = 0;     // free internal heap before the buffers were alloca
 size_t s_heap_largest = 0;  // largest free block at the same moment
 uint32_t s_sd_khz = 0;      // SPI clock the card was mounted with
 bool s_mounted = false;
+sdmmc_card_t *s_card = nullptr;
+std::atomic<uint64_t> s_free_bytes{UINT64_MAX};  // free space on the card, UINT64_MAX = unknown
+std::atomic<bool> s_low_space{false};
+std::atomic<int> s_stop_request{0};               // a StopReason asked for from outside (battery)
+std::atomic<bool> s_ack{false};
+const char *s_stop_reason = "normal";
 int s_fd_me = -1;
 int s_fd_ot = -1;
 uint32_t s_bytes_me = 0;
@@ -149,6 +169,7 @@ bool mount_sd() {
         err = esp_vfs_fat_sdspi_mount(kMount, &host, &slot, &mnt, &card);
         if (err == ESP_OK) {
             sdmmc_card_print_info(stdout, card);
+            s_card = card;
             s_sd_khz = static_cast<uint32_t>(card->real_freq_khz);
             ESP_LOGI(TAG, "SD mounted at %u kHz (asked for %d)", (unsigned)s_sd_khz, freqs[i]);
             s_mounted = true;
@@ -158,6 +179,28 @@ bool mount_sd() {
         spi_bus_free(kSdHost);
     }
     return false;
+}
+
+void unmount_sd() {
+    if (!s_mounted) return;
+    esp_vfs_fat_sdcard_unmount(kMount, s_card);
+    spi_bus_free(kSdHost);
+    s_card = nullptr;
+    s_mounted = false;
+    s_free_bytes = UINT64_MAX;
+}
+
+// Is the card still answering? (CMD13)
+bool card_alive() { return s_card && sdmmc_get_status(s_card) == ESP_OK; }
+
+// FATFS keeps the free-cluster count after the first scan, so this is cheap while recording; the first call
+// (right after mounting, idle) may scan the FAT.
+void update_free() {
+    uint64_t total = 0, free_bytes = 0;
+    int64_t t = esp_timer_get_time();
+    if (esp_vfs_fat_info(kMount, &total, &free_bytes) == ESP_OK) s_free_bytes = free_bytes;
+    int64_t ms = (esp_timer_get_time() - t) / 1000;
+    if (ms > 100) ESP_LOGW(TAG, "free space query took %d ms", (int)ms);
 }
 
 // Rewrite the header for `data_bytes` of PCM, then return to the end of the audio.
@@ -186,6 +229,9 @@ uint32_t next_session_id() {
 bool start_session() {
     if (!s_alloc_ok) { ESP_LOGE(TAG, "no buffers"); s_state = kErrWrite; return false; }
     if (!mount_sd()) { s_state = kErrNoSd; return false; }
+    s_stop_request = 0;
+    s_low_space = false;
+    update_free();
     mkdir(kDir, 0777);  // fine if it already exists
     uint32_t id = next_session_id();
     char path[48];
@@ -261,7 +307,9 @@ bool drain(bool final, uint32_t &write_max_ms) {
     return true;
 }
 
-void stop_session(bool failed) {
+void stop_session(StopReason reason) {
+    const bool failed = reason == StopReason::WriteError;
+    s_stop_reason = stop_reason_name(reason);
     s_feed = false;
     s_stop_us = esp_timer_get_time();
     vTaskDelay(pdMS_TO_TICKS(30));  // let the I2S tasks finish the block they are in
@@ -276,6 +324,7 @@ void stop_session(bool failed) {
         std::fprintf(f, "rate=%u\nformat=s16le mono, data from byte %u\nme=R%04uME.WAV (microphone)\nothers=R%04uOT.WAV (host playback)\n",
                      (unsigned)kUacSampleRate, (unsigned)kWavHeaderBytes, (unsigned)s_session.load(), (unsigned)s_session.load());
         std::fprintf(f, "me_samples=%u\nothers_samples=%u\n", (unsigned)(s_bytes_me / 2), (unsigned)(s_bytes_ot / 2));
+        std::fprintf(f, "stop_reason=%s\n", s_stop_reason);
         // dropped_samples counts everything that did not fit; dropped_audible leaves out lost silence
         // (typically the host stream while nothing is playing).
         std::fprintf(f, "dropped_samples=%u\ndropped_audible=%u\ndropped_me=%u\ndropped_others=%u\n",
@@ -315,7 +364,16 @@ void stop_session(bool failed) {
     ESP_LOGI(TAG, "session %u done: me=%u others=%u samples, dropped=%u (audible %u)", (unsigned)s_session.load(),
              (unsigned)(s_bytes_me / 2), (unsigned)(s_bytes_ot / 2), (unsigned)s_drops.load(),
              (unsigned)s_drops_audible.load());
-    s_state = ok ? kIdle : kErrWrite;
+    if (!ok && !card_alive()) {  // not a bad file but a missing card
+        unmount_sd();
+        s_state = kErrCardLost;
+        return;
+    }
+    update_free();
+    if (!ok) s_state = kErrWrite;
+    else if (reason == StopReason::SdFull) s_state = kErrSdFull;
+    else if (reason == StopReason::Battery) s_state = kErrBattery;
+    else s_state = kIdle;
 }
 
 // Per-second telemetry of the writer task; it keeps the seconds in which something looked slow.
@@ -355,43 +413,91 @@ struct Telemetry {
     }
 };
 
+// Idle housekeeping: notice a card being inserted or pulled out, keep the free space current.
+void card_poll() {
+    if (!s_mounted) {
+        if (mount_sd()) {
+            update_free();
+            if (s_state.load() == kErrNoSd) s_state = kIdle;
+        } else if (s_state.load() == kIdle) {
+            s_state = kErrNoSd;
+        }
+    } else if (!card_alive()) {
+        ESP_LOGW(TAG, "card gone while idle");
+        unmount_sd();
+        s_state = kErrNoSd;
+    }
+}
+
 void writer_task(void *) {
     int64_t last_header_us = 0;
+    int64_t last_poll_us = 0;
+    int64_t last_space_us = 0;
     bool header_me_next = true;
     Telemetry tel;
+    if (s_alloc_ok) card_poll();
     while (true) {
         int64_t before = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(kWriterTickMs));
         int64_t woke = esp_timer_get_time();
         int st = s_state.load();
         if (s_toggle.exchange(false)) {
-            if (st == kIdle || st == kErrNoSd || st == kErrWrite) {
+            if (st == kIdle || st == kErrNoSd) {
                 s_state = kStarting;
                 if (start_session()) {
                     s_state = kRecording;
-                    last_header_us = esp_timer_get_time();
+                    last_header_us = last_space_us = esp_timer_get_time();
                     tel.reset(last_header_us);
                 }
             } else if (st == kRecording) {
                 s_state = kStopping;
-                stop_session(false);
+                stop_session(StopReason::Normal);
+            } else if (st == kErrWrite || st == kErrCardLost || st == kErrSdFull || st == kErrBattery) {
+                s_state = kIdle;  // G0 acknowledges an error screen
+                last_poll_us = 0;
+            }
+            continue;
+        }
+        if (st == kIdle || st == kErrNoSd) {
+            int64_t now = esp_timer_get_time();
+            if (now - last_poll_us > kCardPollUs) {
+                last_poll_us = now;
+                card_poll();
             }
             continue;
         }
         if (st != kRecording) continue;
+        if (int req = s_stop_request.exchange(0)) {
+            s_state = kStopping;
+            stop_session(static_cast<StopReason>(req));
+            continue;
+        }
         int64_t late_us = (woke - before) - static_cast<int64_t>(kWriterTickMs) * 1000;
         uint32_t late_ms = late_us > 0 ? static_cast<uint32_t>(late_us / 1000) : 0;
         tel.late_ms = std::max(tel.late_ms, late_ms);
         s_late_max_ms = std::max(s_late_max_ms, late_ms);
 
         uint32_t bytes_before = s_bytes_me + s_bytes_ot;
-        if (!drain(false, tel.write_ms)) { stop_session(true); continue; }
+        if (!drain(false, tel.write_ms)) { stop_session(StopReason::WriteError); continue; }
         int64_t now = esp_timer_get_time();
         uint32_t drain_ms = static_cast<uint32_t>((now - woke) / 1000);
         tel.drain_ms = std::max(tel.drain_ms, drain_ms);
         s_drain_max_ms = std::max(s_drain_max_ms, drain_ms);
         tel.bytes += s_bytes_me + s_bytes_ot - bytes_before;
         tel.tick(now);
+
+        if (now - last_space_us > kSpacePollUs) {  // free space: warn, then stop before the card is full
+            last_space_us = now;
+            update_free();
+            uint64_t fb = s_free_bytes.load();
+            SpaceLevel lvl = fb == UINT64_MAX ? SpaceLevel::Ok : space_level(minutes_left(fb));
+            s_low_space = lvl != SpaceLevel::Ok;
+            if (lvl == SpaceLevel::Stop) {
+                s_state = kStopping;
+                stop_session(StopReason::SdFull);
+                continue;
+            }
+        }
 
         // Keep the files valid if power is lost. One file per round, alternating: an fsync of both at once
         // stalled the writer for ~450 ms, almost the whole FIFO.
@@ -400,7 +506,7 @@ void writer_task(void *) {
             bool ok = header_me_next ? write_wav_header(s_fd_me, s_bytes_me) : write_wav_header(s_fd_ot, s_bytes_ot);
             header_me_next = !header_me_next;
             note_latency(esp_timer_get_time() - now, s_sync_max_ms);
-            if (!ok) stop_session(true);
+            if (!ok) stop_session(StopReason::WriteError);
         }
     }
 }
@@ -485,6 +591,10 @@ void recorder_init() {
 
 void recorder_toggle() { s_toggle.store(true); }
 
+void recorder_stop_for_battery() {
+    if (s_state.load() == kRecording) s_stop_request = static_cast<int>(StopReason::Battery);
+}
+
 void recorder_feed_me(const int16_t *samples, size_t count) { feed(s_me, samples, count); }
 void recorder_feed_others(const int16_t *samples, size_t count) { feed(s_ot, samples, count); }
 
@@ -496,11 +606,17 @@ RecorderInfo recorder_info() {
         case kStopping: info.state = RecorderState::Stopping; break;
         case kErrNoSd: info.state = RecorderState::NoSd; break;
         case kErrWrite: info.state = RecorderState::WriteError; break;
+        case kErrCardLost: info.state = RecorderState::CardLost; break;
+        case kErrSdFull: info.state = RecorderState::SdFull; break;
+        case kErrBattery: info.state = RecorderState::BatteryStop; break;
         default: info.state = RecorderState::Idle; break;
     }
     info.session = s_session.load();
     info.elapsed_s = s_me_samples.load() / kUacSampleRate;
     info.drops = s_drops_audible.load();  // lost silence is not worth a warning
+    uint64_t fb = s_free_bytes.load();
+    info.sd_minutes = fb == UINT64_MAX ? -1 : minutes_left(fb);
+    info.low_space = s_low_space.load();
     return info;
 }
 
@@ -511,6 +627,9 @@ void recorder_status(char *out, size_t out_size) {
         case kStopping: std::snprintf(out, out_size, "REC STOP"); break;
         case kErrNoSd: std::snprintf(out, out_size, "NO SD"); break;
         case kErrWrite: std::snprintf(out, out_size, "SD ERR"); break;
+        case kErrCardLost: std::snprintf(out, out_size, "CARD LOST"); break;
+        case kErrSdFull: std::snprintf(out, out_size, "SD FULL"); break;
+        case kErrBattery: std::snprintf(out, out_size, "BATT STOP"); break;
         default: {
             unsigned secs = s_me_samples.load() / kUacSampleRate;
             // W = slowest SD write, Y = slowest header sync (ms), D = lost samples

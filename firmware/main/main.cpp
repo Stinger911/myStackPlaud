@@ -32,6 +32,7 @@
 #include "debug.hpp"
 #include "g0_button.hpp"
 #include "keyboard.hpp"
+#include "power_policy.hpp"
 #include "settings.hpp"
 #include "volume.hpp"
 #include "m5stack-cardputer.hpp"
@@ -218,6 +219,10 @@ extern "C" void app_main() {
 #endif
     constexpr int64_t kVolumeOverlayUs = 1'500'000;
     int64_t volume_overlay_until_us = 0;  // the volume bar is shown until then
+    BatteryMonitor battery_monitor;
+    BatteryLevel battery_level = BatteryLevel::Ok;
+    int battery_pct = -1;
+    int64_t last_battery_us = -10'000'000;  // read at once
     bool volume_unsaved = false;          // NVS is written once the overlay has gone, not on every step
     while (true) {
         g_dbg_stage = 1;
@@ -252,6 +257,14 @@ extern "C" void app_main() {
         else if (rec.state == RecorderState::Starting || rec.state == RecorderState::Stopping) g0_ctx = G0Context::Busy;
         G0Output g0_out = g0.update(gpio_get_level(GPIO_NUM_0) == 0, g0_ctx, static_cast<uint32_t>(now_us / 1000));
         if (g0_out.event != G0Event::None) recorder_toggle();  // Start (idle) or Stop (after the hold)
+        if (now_us - last_battery_us > 5'000'000) {  // average a burst of ADC reads, then judge it
+            last_battery_us = now_us;
+            float sum = 0;
+            for (int i = 0; i < 8; ++i) sum += cp.battery_voltage();
+            battery_pct = battery_percent(sum / 8);
+            battery_level = battery_monitor.update(battery_pct);
+            if (battery_level == BatteryLevel::Stop) recorder_stop_for_battery();
+        }
         for (KeyAction a = keyboard_next(); a != KeyAction::None; a = keyboard_next()) {
             switch (a) {
                 case KeyAction::ToggleDebug: debug_view = !debug_view; break;
@@ -288,17 +301,23 @@ extern "C" void app_main() {
                 model.hold_progress = g0_out.hold_progress;
                 model.stop_hint = g0_out.hint;
                 if (rec.drops) model.warning = Warning::Drop;
+                else if (rec.low_space) model.warning = Warning::LowSpace;
+                else if (battery_level != BatteryLevel::Ok) model.warning = Warning::LowBattery;
                 break;
             case RecorderState::Stopping: model.mode = Mode::Saving; break;
             case RecorderState::NoSd: model.mode = Mode::NoSd; break;
             case RecorderState::WriteError: model.mode = Mode::SdError; break;
+            case RecorderState::CardLost: model.mode = Mode::CardLost; break;
+            case RecorderState::SdFull: model.mode = Mode::SdFull; break;
+            case RecorderState::BatteryStop: model.mode = Mode::BatteryStop; break;
             default: model.mode = Mode::Ready; break;
         }
-        // SD space and battery are not measured yet: the footer shows "SD --" and the battery is hidden.
+        model.sd_minutes = rec.sd_minutes;
+        model.battery_pct = static_cast<int8_t>(battery_pct);  // -1 hides the field
         if (std::strcmp(bottom, "BOOT OK") != 0) model.notice = bottom;  // watchdog report, init failures
 
         // An error always brings the status view back (the debug view cannot show it).
-        if (model.mode == Mode::NoSd || model.mode == Mode::SdError) debug_view = false;
+        if (model.mode != Mode::Ready && model.mode != Mode::Recording && model.mode != Mode::Stopping) debug_view = false;
         model.debug_view = debug_view;
         std::snprintf(dbg_counters, sizeof(dbg_counters), "F%u A%u M%u U%u P%u", static_cast<unsigned>(g_frame),
                       static_cast<unsigned>(g_speaker_cb.load()), static_cast<unsigned>(g_mic_cb.load()),

@@ -148,7 +148,7 @@ All sounds are capped by the same -20 dB ceiling as playback. If a beep cannot b
 1. Refactor `screen.cpp` into zone drawing functions (header / centre / footer) with a state table; debug view under `Tab`. Needs fonts for 11/13/16/24/32/40 px.
 2. Data sources: ME/OT levels (already in the audio tasks), SD free space, battery (check the PMIC), `drops` (from M1).
 3. Normal states S1-S4 with beeps; stop by hold (R4.7).
-4. Emergency states S5-S10 with fixtures: remove the card, fill the card, pull USB.
+4. Emergency states S5-S10 with fixtures: remove the card, fill the card, pull USB. **Implemented (free space, battery, S5-S7, S9, S10); not yet exercised on hardware.** The beeps of these states belong to the sound step.
 5. Volume control (R4.9) after checking how it combines with host volume in `audio.cpp`. **Keyboard, `Tab` and volume keys with overlay and NVS are in** (own TCA8418 driver on the codec's I2C bus); the confirmation tick and the `HOST MUTE` overlay are not; `F` is read but does nothing until file mode exists.
 6. Link indicator (R4.8) and file mode (R4.10) after the R4.5 decision.
 7. Photograph or describe every state in `firmware/README.md` (A1).

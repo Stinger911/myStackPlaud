@@ -106,3 +106,11 @@ USB/I2S clock drift), a real Meet/Zoom call.
 - `Tab`: status / debug view (an error screen always returns to status). `+` / `=` and `-`: headphone level 0..10, 3 dB per step below the host volume (`volume.hpp`, host test `test/volume_test.cpp`), auto-repeat on hold, 1.5 s overlay, stored in NVS after the overlay has gone. Level 0 mutes playback only; ME and OT recordings are unaffected.
 - `F` is decoded and logged, file mode is not implemented yet. Not done: the 1 kHz volume tick, the `HOST MUTE` overlay.
 
+## Free space, battery and emergency states (M4)
+- The card is mounted at boot and polled every 2 s while idle: inserting or pulling it switches `NO SD CARD` / READY by itself. Free space comes from FATFS (`esp_vfs_fat_info`, cached after the first query) and is shown as recording time left (192 000 bytes per second for both streams); while recording it is checked every 5 s.
+- Below 15 minutes the status row shows `SD < 15 MIN` (orange border); below 5 minutes the recording stops cleanly and the `SD FULL` screen waits for G0.
+- Battery: GPIO10 through a 2:1 divider (espp `battery_voltage()`), 8 reads averaged every 5 s, percentage from the 1S Li-ion curve in `power_policy.hpp`. A voltage that is not a battery's (below 2.5 V or above 4.6 V) hides the field. `BATT LOW` at 15% or less; at 5% or less for three readings in a row the recording stops cleanly (`BATTERY LOW` screen). **Unverified on hardware: whether this pin and divider are right on the ADV.**
+- A write error ends the recording with the files closed; if the card no longer answers (CMD13) the screen is `CARD REMOVED`, otherwise `SD WRITE ERROR`. Error screens stay until G0 is pressed; G0 does not start a recording from them.
+- The reason of the stop is in `R<nnnn>.TXT` as `stop_reason=normal|write_error|sd_full|battery`.
+- Host tests: `test/power_policy_test.cpp` (space levels, battery curve, stop confirmation).
+
