@@ -194,12 +194,10 @@ void format_drops(uint32_t samples, char *out, size_t n) {
     else std::snprintf(out, n, "DROP %uM", static_cast<unsigned>(std::min<uint32_t>(s / 60, 99)));
 }
 
-// `prefix` adds "SD "; the footer drops it when a loss counter needs the room.
-void format_sd(int32_t minutes, char *out, size_t n, bool prefix = true) {
-    const char *p = prefix ? "SD " : "";
-    if (minutes < 0) std::snprintf(out, n, "%s--", p);
-    else if (minutes < 60) std::snprintf(out, n, "%s%dM", p, static_cast<int>(minutes));
-    else std::snprintf(out, n, "%s%dH%02dM", p, static_cast<int>(std::min<int32_t>(minutes / 60, 99)), static_cast<int>(minutes % 60));
+void format_sd(int32_t minutes, char *out, size_t n) {
+    if (minutes < 0) std::snprintf(out, n, "--");
+    else if (minutes < 60) std::snprintf(out, n, "%dM", static_cast<int>(minutes));
+    else std::snprintf(out, n, "%dH%02dM", static_cast<int>(std::min<int32_t>(minutes / 60, 99)), static_cast<int>(minutes % 60));
 }
 
 // ---------------------------------------------------------------- state table
@@ -413,23 +411,46 @@ void draw_volume_overlay(const ScreenModel &m) {
     draw_text(buf, 232, kLevelsY, 2, kWhite, Align::Right);
 }
 
+// SD card icon, 10x14 px: a card with the cut corner at the top right and contact slits.
+constexpr int kSdIconW = 10;
+constexpr int kSdIconH = 14;
+constexpr int kSdIconGap = 4;
+
+void draw_sd_icon(int x, int y, uint16_t c) {
+    constexpr uint16_t kBody[kSdIconH] = {0x3F8, 0x3FC, 0x3FE, 0x3FF, 0x3FF, 0x3FF, 0x3FF,
+                                          0x3FF, 0x3FF, 0x3FF, 0x3FF, 0x3FF, 0x3FF, 0x3FF};  // bit 9 = left column
+    for (int r = 0; r < kSdIconH; ++r)
+        for (int col = 0; col < kSdIconW; ++col)
+            if (kBody[r] & (1 << (kSdIconW - 1 - col))) fill_rect(x + col, y + r, 1, 1, c);
+    for (int col = 2; col <= 6; col += 2) fill_rect(x + col, y + 2, 1, 4, kBlack);  // contacts
+}
+
+// Icon followed by `text`; the pair is aligned as one item.
+void draw_sd_item(const char *text, int x, uint16_t c, Align align) {
+    int w = kSdIconW + kSdIconGap + text_width(text, 2);
+    if (align == Align::Center) x -= w / 2;
+    if (align == Align::Right) x -= w;
+    draw_sd_icon(x, kFooterTextY, c);
+    draw_text(text, x + kSdIconW + kSdIconGap, kFooterTextY, 2, c);
+}
+
 void draw_footer(const ScreenModel &m) {
     fill_rect(kBorder, kRuleBottom, 236, 1, kDim);
     char buf[32];
     if (m.mode == Mode::Files) {
         format_sd(m.sd_minutes, buf, sizeof(buf));
-        draw_text(buf, 8, kFooterTextY, 2, kWhite);
+        draw_sd_item(buf, 8, kWhite, Align::Left);
         draw_text("MOUNTED", 232, kFooterTextY, 2, kViolet, Align::Right);
         return;
     }
     std::snprintf(buf, sizeof(buf), "R%04u", static_cast<unsigned>(m.session));
     draw_text(buf, 8, kFooterTextY, 2, kWhite);
     if (m.mode == Mode::NoSd || m.mode == Mode::SdError || m.mode == Mode::CardLost) {
-        draw_text(m.mode == Mode::SdError ? "SD ERR" : "SD --", 232, kFooterTextY, 2, kRed, Align::Right);
+        draw_sd_item(m.mode == Mode::SdError ? "ERR" : "--", 232, kRed, Align::Right);
         return;
     }
-    format_sd(m.sd_minutes, buf, sizeof(buf), m.drops == 0);
-    draw_text(buf, 112, kFooterTextY, 2, m.warning == Warning::LowSpace ? kOrange : kWhite, Align::Center);
+    format_sd(m.sd_minutes, buf, sizeof(buf));
+    draw_sd_item(buf, 112, m.warning == Warning::LowSpace ? kOrange : kWhite, Align::Center);
     format_drops(m.drops, buf, sizeof(buf));
     draw_text(buf, 232, kFooterTextY, 2, m.drops ? kRed : kGrey, Align::Right);
 }
