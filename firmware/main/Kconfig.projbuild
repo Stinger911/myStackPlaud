@@ -12,12 +12,12 @@ config MYPLAUD_BOOT_ONLY
     default n
 
 config MYPLAUD_FIFO_LOG2
-    int "Recorder FIFO size per stream, log2 of samples (16 = 65536 samples = 1.4 s at 48 kHz)"
+    int "Upper limit of the recorder FIFO per stream, log2 of samples (17 = 131072 samples = 2.7 s at 48 kHz)"
     range 13 17
-    default 16
+    default 17
     help
-        The recorder keeps this much audio per stream while the SD card is busy. Falls back to
-        smaller sizes when the RAM is not available (the size is logged and written to the .TXT).
+        The recorder takes as much of the free RAM as it can for the FIFOs, up to this size per stream
+        (the size is logged and written to the .TXT).
 
 config MYPLAUD_HEADER_SYNC_SECONDS
     int "Seconds between WAV header rewrites of one file (ME and OT alternate, so a sync happens every half of it)"

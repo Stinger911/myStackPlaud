@@ -39,21 +39,27 @@ constexpr int kFooterTextY = 115;
 constexpr int kLevelsY = 91;
 
 // Native (little-endian) RGB565: the display driver byte-swaps the buffer in place before
-// sending, so we must not swap ourselves. A single buffer is enough: a frame leaves in about
-// 13 ms and the next one is built 33 ms later.
-constexpr size_t kFrameBytes = kLcdWidth * kLcdHeight * 2;
-// One DMA transfer on the ESP32-S3 is limited to 32 KiB, so the frame goes out in strips.
+// sending, so we must not swap ourselves. Only two strips of the frame are kept in RAM (26 KB instead
+// of 65 KB: the recorder FIFOs need the memory). The whole screen is drawn once per strip with the
+// primitives clipped to it, then the strip is sent. The send is asynchronous and the driver waits for
+// the previous strip before it starts the next one, so alternating two buffers is enough: the buffer
+// being drawn was last sent two strips ago.
+// One DMA transfer on the ESP32-S3 is limited to 32 KiB, so a strip must stay below that.
 constexpr size_t kStripRows = 27;
+constexpr size_t kStripBytes = kLcdWidth * kStripRows * 2;
 static_assert(kLcdHeight % kStripRows == 0, "strips must tile the frame");
-static_assert(kStripRows * kLcdWidth * 2 <= 32768, "strip exceeds the SPI DMA limit");
+static_assert(kStripBytes <= 32768, "strip exceeds the SPI DMA limit");
 
-alignas(16) std::array<uint8_t, kFrameBytes> g_frame_storage;
-uint8_t *const g_frame = g_frame_storage.data();
+alignas(16) std::array<uint8_t, kStripBytes> g_frame_storage[2];
+uint8_t *g_frame = g_frame_storage[0].data();
+unsigned g_strip_count = 0;  // strips drawn so far; its parity selects the buffer
+int g_strip_y = 0;  // first screen row of the strip being drawn
 
 // ---------------------------------------------------------------- primitives
 
 void put(int x, int y, uint16_t c) {
-    if (x < 0 || y < 0 || x >= static_cast<int>(kLcdWidth) || y >= static_cast<int>(kLcdHeight)) return;
+    y -= g_strip_y;
+    if (x < 0 || y < 0 || x >= static_cast<int>(kLcdWidth) || y >= static_cast<int>(kStripRows)) return;
     size_t i = (static_cast<size_t>(y) * kLcdWidth + static_cast<size_t>(x)) * 2;
     c = ~c;  // the driver leaves the panel colour-inverted; compensate here
     g_frame[i] = c & 0xFF;
@@ -61,7 +67,8 @@ void put(int x, int y, uint16_t c) {
 }
 
 void fill_rect(int x, int y, int w, int h, uint16_t c) {
-    for (int j = 0; j < h; ++j)
+    int j0 = std::max(0, g_strip_y - y), j1 = std::min(h, g_strip_y + static_cast<int>(kStripRows) - y);
+    for (int j = j0; j < j1; ++j)
         for (int i = 0; i < w; ++i) put(x + i, y + j, c);
 }
 
@@ -455,15 +462,6 @@ void draw_footer(const ScreenModel &m) {
     draw_text(buf, 232, kFooterTextY, 2, m.drops ? kRed : kGrey, Align::Right);
 }
 
-void push_frame() {
-    auto &cp = espp::M5StackCardputer::get();
-    for (size_t y = 0, strip = 0; y < kLcdHeight; y += kStripRows, ++strip) {
-        g_dbg_stage = 10 + strip;
-        cp.write_lcd_frame(0, y, kLcdWidth, kStripRows, g_frame + y * kLcdWidth * 2);
-    }
-    g_dbg_stage = 20;
-}
-
 }  // namespace
 
 float level_from_peak(int peak) {
@@ -473,14 +471,21 @@ float level_from_peak(int peak) {
 }
 
 void screen_draw(const ScreenModel &m, uint32_t now_ms) {
-    std::memset(g_frame, 0xFF, kFrameBytes);  // inverted black
-    uint16_t border = border_colour(m, now_ms);
-    fill_rect(0, 0, kLcdWidth, kLcdHeight, border);
-    fill_rect(kBorder, kBorder, kLcdWidth - 2 * kBorder, kLcdHeight - 2 * kBorder, kBlack);
+    auto &cp = espp::M5StackCardputer::get();
+    const uint16_t border = border_colour(m, now_ms);
+    for (size_t y = 0, strip = 0; y < kLcdHeight; y += kStripRows, ++strip) {
+        g_dbg_stage = 10 + strip;
+        g_strip_y = static_cast<int>(y);
+        g_frame = g_frame_storage[g_strip_count++ & 1].data();
+        std::memset(g_frame, 0xFF, kStripBytes);  // inverted black
+        fill_rect(0, 0, kLcdWidth, kLcdHeight, border);
+        fill_rect(kBorder, kBorder, kLcdWidth - 2 * kBorder, kLcdHeight - 2 * kBorder, kBlack);
 
-    draw_header(m);
-    draw_centre(m, now_ms);
-    draw_volume_overlay(m);
-    draw_footer(m);
-    push_frame();
+        draw_header(m);
+        draw_centre(m, now_ms);
+        draw_volume_overlay(m);
+        draw_footer(m);
+        cp.write_lcd_frame(0, y, kLcdWidth, kStripRows, g_frame);
+    }
+    g_dbg_stage = 20;
 }

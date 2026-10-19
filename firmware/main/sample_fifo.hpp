@@ -1,8 +1,10 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "esp_heap_caps.h"
 
@@ -48,26 +50,18 @@ private:
     std::atomic<size_t> tail_{0};
 };
 
-// Same FIFO with a run-time capacity (power of two) in memory allocated once by init().
-// Used for the recorder, where the capacity is a build option and the RAM may not be available.
+// Same FIFO with a run-time capacity in memory allocated once by alloc(). The capacity is any number
+// of samples (not only a power of two), so the recorder can take whatever RAM is free. The positions
+// run over [0, 2 * capacity), which tells a full FIFO from an empty one.
 class DynSampleFifo {
 public:
-    // Allocates 2^log2 samples, trying smaller sizes (down to 2^min_log2) when memory is short.
-    // Returns the capacity in samples, or 0 when nothing fits.
-    size_t init(unsigned log2, unsigned min_log2) {
-        for (unsigned l = log2; l >= min_log2; --l) {
-            buf_ = static_cast<int16_t *>(heap_caps_malloc((size_t{1} << l) * sizeof(int16_t), MALLOC_CAP_8BIT));
-            if (buf_) { cap_ = size_t{1} << l; return cap_; }
-        }
-        return 0;
-    }
-
-    // Allocates exactly 2^log2 samples; false when the memory is not available.
-    bool alloc(unsigned log2) {
+    // Allocates exactly `samples` samples; false when the memory is not available.
+    bool alloc(size_t samples) {
         release();
-        buf_ = static_cast<int16_t *>(heap_caps_malloc((size_t{1} << log2) * sizeof(int16_t), MALLOC_CAP_8BIT));
+        if (samples == 0) return false;
+        buf_ = static_cast<int16_t *>(heap_caps_malloc(samples * sizeof(int16_t), MALLOC_CAP_8BIT));
         if (!buf_) return false;
-        cap_ = size_t{1} << log2;
+        cap_ = samples;
         return true;
     }
 
@@ -84,33 +78,49 @@ public:
     size_t write(const int16_t *in, size_t n) {
         size_t head = head_.load(std::memory_order_relaxed);
         size_t tail = tail_.load(std::memory_order_acquire);
-        size_t room = cap_ - (head - tail);
+        size_t room = cap_ - used(head, tail);
         if (n > room) n = room;
-        for (size_t i = 0; i < n; ++i) buf_[(head + i) & (cap_ - 1)] = in[i];
-        head_.store(head + n, std::memory_order_release);
+        copy_in(head, in, n);
+        head_.store(advance(head, n), std::memory_order_release);
         return n;
     }
 
     size_t read(int16_t *out, size_t n) {
-        size_t avail = available();
-        if (n > avail) n = avail;
         size_t tail = tail_.load(std::memory_order_relaxed);
-        for (size_t i = 0; i < n; ++i) out[i] = buf_[(tail + i) & (cap_ - 1)];
-        tail_.store(tail + n, std::memory_order_release);
+        size_t avail = used(head_.load(std::memory_order_acquire), tail);
+        if (n > avail) n = avail;
+        size_t i = tail % cap_;
+        size_t first = std::min(n, cap_ - i);
+        std::memcpy(out, buf_ + i, first * sizeof(int16_t));
+        std::memcpy(out + first, buf_, (n - first) * sizeof(int16_t));
+        tail_.store(advance(tail, n), std::memory_order_release);
         return n;
     }
 
     void discard(size_t n) {
-        size_t avail = available();
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        size_t avail = used(head_.load(std::memory_order_acquire), tail);
         if (n > avail) n = avail;
-        tail_.store(tail_.load(std::memory_order_relaxed) + n, std::memory_order_release);
+        tail_.store(advance(tail, n), std::memory_order_release);
     }
 
     size_t available() const {
-        return head_.load(std::memory_order_acquire) - tail_.load(std::memory_order_acquire);
+        return used(head_.load(std::memory_order_acquire), tail_.load(std::memory_order_acquire));
     }
 
 private:
+    size_t used(size_t head, size_t tail) const { return head >= tail ? head - tail : head + 2 * cap_ - tail; }
+    size_t advance(size_t pos, size_t n) const {
+        pos += n;
+        return pos >= 2 * cap_ ? pos - 2 * cap_ : pos;
+    }
+    void copy_in(size_t head, const int16_t *in, size_t n) {
+        size_t i = head % cap_;
+        size_t first = std::min(n, cap_ - i);
+        std::memcpy(buf_ + i, in, first * sizeof(int16_t));
+        std::memcpy(buf_, in + first, (n - first) * sizeof(int16_t));
+    }
+
     int16_t *buf_ = nullptr;
     size_t cap_ = 0;
     std::atomic<size_t> head_{0};

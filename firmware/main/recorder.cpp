@@ -41,11 +41,12 @@ constexpr char kDir[] = "/sdcard/MYPLAUD";
 
 // SD write size: a multiple of the 512-byte sector, up to one 16 KiB FAT cluster. The audio starts at
 // byte 512 of the file (see wav_header.hpp), so every write is sector-aligned and goes to the card as
-// one multi-block transfer. Chosen at start-up as a quarter of the FIFO at most, so a FIFO never has
-// to be completely full before a write can happen.
+// one multi-block transfer.
 constexpr size_t kMinChunk = 2048;  // samples (4 KiB)
 constexpr size_t kMaxChunk = 8192;  // samples (16 KiB)
-constexpr unsigned kMinFifoLog2 = 13;
+constexpr size_t kMinFifoSamples = 8192;
+constexpr size_t kFifoStep = 1024;  // FIFO sizes tried downwards when the RAM is fragmented
+constexpr size_t kRuntimeReserve = 24 * 1024;  // internal RAM left free after the buffers
 constexpr int64_t kHeaderUpdateUs = CONFIG_MYPLAUD_HEADER_SYNC_SECONDS * 1'000'000LL;
 constexpr size_t kMaxEvents = 32;
 constexpr size_t kMaxSlow = 32;
@@ -552,21 +553,25 @@ void feed(Stream &st, const int16_t *samples, size_t count) {
     if (level > st.second_high.load(std::memory_order_relaxed)) st.second_high.store(level, std::memory_order_relaxed);
 }
 
-// Two FIFOs of the same size (the biggest the free RAM allows, there is no PSRAM on this board), so
-// neither stream is left with a sliver. Then the write buffer: internal, DMA-capable and 16-byte aligned,
-// otherwise the SD driver would copy and send it one sector at a time.
+// Two FIFOs of the same size, as big as the free RAM allows (there is no PSRAM on this board), so
+// neither stream is left with a sliver. kRuntimeReserve stays free for what is allocated later (files,
+// task stacks). Then the write buffer: internal, DMA-capable and 16-byte aligned, otherwise the SD
+// driver would copy and send it one sector at a time.
 bool alloc_buffers() {
     s_heap_free = heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
     s_heap_largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
-    unsigned log2 = 0;
-    for (unsigned l = CONFIG_MYPLAUD_FIFO_LOG2; l >= kMinFifoLog2; --l) {
-        if (s_me.fifo.alloc(l)) {
-            if (s_ot.fifo.alloc(l)) { log2 = l; break; }
+    const size_t budget = s_heap_free > kRuntimeReserve + kMaxChunk * sizeof(int16_t)
+                              ? s_heap_free - kRuntimeReserve - kMaxChunk * sizeof(int16_t) : 0;
+    size_t samples = std::min<size_t>(budget / 2 / sizeof(int16_t), size_t{1} << CONFIG_MYPLAUD_FIFO_LOG2);
+    bool ok = false;
+    for (; samples >= kMinFifoSamples; samples -= kFifoStep) {
+        if (s_me.fifo.alloc(samples)) {
+            if (s_ot.fifo.alloc(samples)) { ok = true; break; }
             s_me.fifo.release();
         }
     }
-    if (log2 == 0) return false;
-    size_t chunk = std::clamp<size_t>(s_me.fifo.capacity() / 4, kMinChunk, kMaxChunk);
+    if (!ok) return false;
+    size_t chunk = kMaxChunk;
     while (chunk >= kMinChunk) {
         s_chunk = static_cast<int16_t *>(
             heap_caps_aligned_alloc(16, chunk * sizeof(int16_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
