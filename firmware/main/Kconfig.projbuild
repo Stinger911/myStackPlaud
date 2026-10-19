@@ -34,4 +34,12 @@ config MYPLAUD_SD_FREQ_KHZ
         The card is tried at this clock first. 20000 is the proven rate; 40000 (SD high speed) failed to
         mount on the test card, so it is opt-in. The mount is retried at 20 MHz if it fails, and the clock actually used is written to the .TXT (sd_khz).
 
+config MYPLAUD_BEEPS_WHILE_RECORDING
+    bool "Volume ticks and warning beeps while recording"
+    default n
+    help
+        The start and stop beeps are played while the recorder is not writing, so the microphone never
+        hears them. Volume ticks and warning beeps would be played during a recording and the speaker is
+        next to the microphone: off until it is shown that they stay out of the ME file.
+
 endmenu

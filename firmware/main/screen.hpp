@@ -27,6 +27,9 @@ enum class Mode : uint8_t {
     BatteryStop,  // S10 after the stop
 };
 
+// Full-screen flash on start and stop (150 ms), drawn instead of everything else.
+enum class Flash : uint8_t { None, Green, White };
+
 // Warnings shown in the status row while recording (S7, S8, S10).
 enum class Warning : uint8_t { None, LowSpace, LowBattery, Drop };
 
@@ -34,6 +37,7 @@ struct ScreenModel {
     Link link = Link::Off;
     Mode mode = Mode::Ready;
     Warning warning = Warning::None;
+    Flash flash = Flash::None;
 
     bool host_sound = false;     // host audio present (SOUND) or not (SILENCE)
     float hold_progress = 0.0f;  // 0..1 while mode == Stopping

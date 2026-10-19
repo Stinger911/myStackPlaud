@@ -123,3 +123,8 @@ device restarts into the normal mode. Mode switching is a restart on purpose (on
 `specs/M4-device-ux.md`, R4.5). Implementation: `main/file_mode.cpp` (RTC flag, mass-storage callbacks over raw
 `sdmmc` sectors, descriptors swapped with the linker's `--wrap`), the TinyUSB MSC class is enabled in the top
 `CMakeLists.txt`. The free-space field shows `--` in file mode.
+
+## Power (M4, R4.4)
+
+The battery charges over USB-C while the device works as a USB headset (confirmed on the hardware, 2026-10-19).
+Runtime on battery while recording has not been measured yet.

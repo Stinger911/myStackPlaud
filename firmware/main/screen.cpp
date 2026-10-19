@@ -478,13 +478,17 @@ void screen_draw(const ScreenModel &m, uint32_t now_ms) {
         g_strip_y = static_cast<int>(y);
         g_frame = g_frame_storage[g_strip_count++ & 1].data();
         std::memset(g_frame, 0xFF, kStripBytes);  // inverted black
-        fill_rect(0, 0, kLcdWidth, kLcdHeight, border);
-        fill_rect(kBorder, kBorder, kLcdWidth - 2 * kBorder, kLcdHeight - 2 * kBorder, kBlack);
+        if (m.flash != Flash::None) {
+            fill_rect(0, 0, kLcdWidth, kLcdHeight, m.flash == Flash::Green ? kGreen : kWhite);
+        } else {
+            fill_rect(0, 0, kLcdWidth, kLcdHeight, border);
+            fill_rect(kBorder, kBorder, kLcdWidth - 2 * kBorder, kLcdHeight - 2 * kBorder, kBlack);
 
-        draw_header(m);
-        draw_centre(m, now_ms);
-        draw_volume_overlay(m);
-        draw_footer(m);
+            draw_header(m);
+            draw_centre(m, now_ms);
+            draw_volume_overlay(m);
+            draw_footer(m);
+        }
         cp.write_lcd_frame(0, y, kLcdWidth, kStripRows, g_frame);
     }
     g_dbg_stage = 20;

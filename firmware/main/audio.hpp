@@ -28,6 +28,13 @@ int audio_level();
 // The internal I2C bus (ES8311 at 0x18, keyboard controller at 0x34); valid after audio_start().
 i2c_master_bus_handle_t audio_i2c_bus();
 
+// Short sounds for the device's own feedback (specs/M4-device-ux.md, Sounds). They are mixed into the
+// headphone/speaker path only, after the "others" stream has been handed to the recorder, so the OT
+// recording never contains them. The microphone can still hear the speaker, so the caller plays them
+// while the recorder is not writing (see main.cpp). Silent at device level 0 and on host mute.
+enum class Sound : uint8_t { None, Start, Stop, Warning, Error, Tick };
+void audio_beep(Sound sound);
+
 struct AudioStats {
     uint32_t read_ok;       // successful microphone reads
     uint32_t read_err;      // failed microphone reads

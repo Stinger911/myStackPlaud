@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
+#include <iterator>
 
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
@@ -55,6 +57,83 @@ std::atomic<int> s_last_err{0};
 std::atomic<int> s_raw_peak{0};
 std::atomic<uint32_t> s_play_underrun{0};
 std::atomic<uint32_t> s_play_trim{0};
+
+// ---------------------------------------------------------------- beeps
+
+struct Tone {
+    uint16_t hz;  // 0 = pause
+    uint16_t ms;
+};
+constexpr Tone kStart[] = {{880, 80}};
+constexpr Tone kStop[] = {{880, 80}, {0, 30}, {440, 80}};
+constexpr Tone kWarning[] = {{660, 60}, {0, 40}, {660, 60}};
+constexpr Tone kError[] = {{330, 1000}};
+constexpr Tone kTick[] = {{1000, 15}};
+
+struct Pattern {
+    const Tone *tones;
+    size_t count;
+};
+constexpr Pattern pattern_of(Sound s) {
+    switch (s) {
+        case Sound::Start: return {kStart, std::size(kStart)};
+        case Sound::Stop: return {kStop, std::size(kStop)};
+        case Sound::Warning: return {kWarning, std::size(kWarning)};
+        case Sound::Error: return {kError, std::size(kError)};
+        case Sound::Tick: return {kTick, std::size(kTick)};
+        default: return {nullptr, 0};
+    }
+}
+
+constexpr float kBeepAmplitude = 8000.0f;  // about -12 dBFS before the DAC register
+constexpr size_t kBeepRamp = 96;           // 2 ms fade in and out against clicks
+
+std::atomic<uint8_t> s_sound_request{0};
+
+// Adds the running beep to `mono` (called from the tx task only).
+class BeepPlayer {
+public:
+    void mix(int16_t *mono, size_t n) {
+        uint8_t req = s_sound_request.exchange(0);
+        if (req) {
+            pattern_ = pattern_of(static_cast<Sound>(req));
+            index_ = 0;
+            left_ = 0;
+            active_ = pattern_.count > 0;
+            next_segment();
+        }
+        for (size_t i = 0; i < n && active_; ++i) {
+            if (left_ == 0 && !next_segment()) break;
+            if (tone_.hz) {
+                size_t pos = total_ - left_;
+                float env = std::min({1.0f, static_cast<float>(pos) / kBeepRamp, static_cast<float>(left_) / kBeepRamp});
+                float v = kBeepAmplitude * env * std::sin(phase_);
+                phase_ += 6.2831853f * tone_.hz / kSampleRate;
+                if (phase_ > 6.2831853f) phase_ -= 6.2831853f;
+                mono[i] = static_cast<int16_t>(std::clamp(static_cast<int>(mono[i]) + static_cast<int>(v), -32768, 32767));
+            }
+            --left_;
+        }
+    }
+
+private:
+    static constexpr float kSampleRate = 48000.0f;
+    bool next_segment() {
+        if (index_ >= pattern_.count) {
+            active_ = false;
+            return false;
+        }
+        tone_ = pattern_.tones[index_++];
+        total_ = left_ = static_cast<size_t>(tone_.ms) * 48;
+        phase_ = 0;
+        return true;
+    }
+    Pattern pattern_{};
+    Tone tone_{};
+    size_t index_ = 0, left_ = 0, total_ = 0;
+    float phase_ = 0;
+    bool active_ = false;
+};
 
 bool codec_write(uint8_t reg, uint8_t value) {
     const uint8_t buf[2] = {reg, value};
@@ -148,6 +227,7 @@ void tx_task(void *) {
     std::array<int16_t, kBlock> mono;
     std::array<int16_t, 2 * kBlock> stereo;
     bool playing = false;
+    BeepPlayer beep;
     while (true) {
         size_t avail = s_play_fifo.available();
         if (avail > kTrimAbove) {  // host runs faster than this clock: drop the oldest
@@ -166,6 +246,7 @@ void tx_task(void *) {
             std::fill(mono.begin(), mono.end(), 0);
         }
         recorder_feed_others(mono.data(), kBlock);  // what the host sent, even when muted here
+        beep.mix(mono.data(), kBlock);              // after the recorder: the OT file never has the beeps
         if (s_mute.load() || s_level.load() == 0) std::fill(mono.begin(), mono.end(), 0);
         for (size_t i = 0; i < kBlock; ++i) stereo[2 * i] = stereo[2 * i + 1] = mono[i];
         size_t written = 0;
@@ -208,6 +289,8 @@ bool audio_start(uint32_t sample_rate, MicSamplesCb mic_cb) {
     xTaskCreate(tx_task, "audio_tx", 4096, nullptr, 6, nullptr);
     return true;
 }
+
+void audio_beep(Sound sound) { s_sound_request.store(static_cast<uint8_t>(sound)); }
 
 void audio_play(const int16_t *samples, size_t count) { s_play_fifo.write(samples, count); }
 

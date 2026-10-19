@@ -265,6 +265,20 @@ extern "C" void app_main() {
     int battery_pct = -1;
     int64_t last_battery_us = -10'000'000;  // read at once
     bool volume_unsaved = false;          // NVS is written once the overlay has gone, not on every step
+    // Feedback (R4.3). The start beep plays first and the recording begins after it, and the stop beep
+    // plays once the files are closed: the microphone never hears either of them.
+    constexpr int64_t kStartDelayUs = 120'000;  // the 80 ms beep plus a margin
+    constexpr int64_t kFlashUs = 150'000;
+    int64_t start_at_us = 0;  // a start is waiting for its beep to end
+    int64_t flash_until_us = 0;
+    Flash flash_colour = Flash::None;
+    RecorderState prev_state = RecorderState::Idle;
+    Warning prev_warning = Warning::None;
+#ifdef CONFIG_MYPLAUD_BEEPS_WHILE_RECORDING
+    constexpr bool kBeepsWhileRecording = true;
+#else
+    constexpr bool kBeepsWhileRecording = false;
+#endif
     while (true) {
         g_dbg_stage = 1;
 #if CONFIG_MYPLAUD_SCREEN_TEST
@@ -295,9 +309,33 @@ extern "C" void app_main() {
         RecorderInfo rec = recorder_info();
         G0Context g0_ctx = G0Context::Idle;
         if (rec.state == RecorderState::Recording) g0_ctx = G0Context::Recording;
-        else if (rec.state == RecorderState::Starting || rec.state == RecorderState::Stopping) g0_ctx = G0Context::Busy;
+        else if (rec.state == RecorderState::Starting || rec.state == RecorderState::Stopping || start_at_us != 0)
+            g0_ctx = G0Context::Busy;
         G0Output g0_out = g0.update(gpio_get_level(GPIO_NUM_0) == 0, g0_ctx, static_cast<uint32_t>(now_us / 1000));
-        if (g0_out.event != G0Event::None) recorder_toggle();  // Start (idle) or Stop (after the hold)
+        if (g0_out.event == G0Event::Start && rec.state == RecorderState::Idle) {
+            audio_beep(Sound::Start);
+            flash_colour = Flash::Green;
+            flash_until_us = now_us + kFlashUs;
+            start_at_us = now_us + kStartDelayUs;
+        } else if (g0_out.event != G0Event::None) {
+            recorder_toggle();  // Stop (after the hold) or acknowledge an error screen
+        }
+        if (start_at_us != 0 && now_us >= start_at_us) {
+            start_at_us = 0;
+            recorder_toggle();
+        }
+        // The files are closed (Stopping -> Idle): the stop beep. A failed stop is the error tone instead.
+        if (prev_state == RecorderState::Stopping && rec.state == RecorderState::Idle) {
+            audio_beep(Sound::Stop);
+            flash_colour = Flash::White;
+            flash_until_us = now_us + kFlashUs;
+        } else if (rec.state != prev_state && (rec.state == RecorderState::WriteError || rec.state == RecorderState::CardLost ||
+                                               rec.state == RecorderState::SdFull || rec.state == RecorderState::BatteryStop)) {
+            audio_beep(Sound::Error);
+        }
+        prev_state = rec.state;
+        const bool quiet_card = rec.state != RecorderState::Recording && rec.state != RecorderState::Starting &&
+                                rec.state != RecorderState::Stopping;  // nothing is being recorded
         if (now_us - last_battery_us > 5'000'000) {  // average a burst of ADC reads, then judge it
             last_battery_us = now_us;
             float sum = 0;
@@ -315,6 +353,7 @@ extern "C" void app_main() {
                     if (level != audio_level()) {
                         audio_set_level(level);
                         volume_unsaved = true;
+                        if (quiet_card || kBeepsWhileRecording) audio_beep(Sound::Tick);
                     }
                     volume_overlay_until_us = now_us + kVolumeOverlayUs;
                     break;
@@ -333,6 +372,7 @@ extern "C" void app_main() {
             volume_unsaved = false;
         }
         ScreenModel model;
+        model.flash = now_us < flash_until_us ? flash_colour : Flash::None;
         model.volume = now_us < volume_overlay_until_us ? static_cast<int8_t>(audio_level()) : -1;
         model.link = connected ? Link::UsbAudio : Link::Off;
         model.host_sound = connected && (now_us - last_sound_us) < kSilenceAfterUs;
@@ -358,6 +398,9 @@ extern "C" void app_main() {
             case RecorderState::BatteryStop: model.mode = Mode::BatteryStop; break;
             default: model.mode = Mode::Ready; break;
         }
+        if (kBeepsWhileRecording && model.warning != Warning::None && model.warning != prev_warning)
+            audio_beep(Sound::Warning);
+        prev_warning = model.warning;
         model.sd_minutes = rec.sd_minutes;
         model.battery_pct = static_cast<int8_t>(battery_pct);  // -1 hides the field
         if (std::strcmp(bottom, "BOOT OK") != 0) model.notice = bottom;  // watchdog report, init failures
