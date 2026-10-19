@@ -30,6 +30,7 @@
 #include "config.hpp"
 #include "recorder.hpp"
 #include "debug.hpp"
+#include "file_mode.hpp"
 #include "g0_button.hpp"
 #include "keyboard.hpp"
 #include "power_policy.hpp"
@@ -127,6 +128,39 @@ void watchdog_task(void *) {
     }
 }
 
+// File mode (USB flash drive): the recorder and the headset are not running, the card belongs to the
+// computer. Leaves (by restarting) on `F`, G0 or an eject on the computer.
+[[noreturn]] void run_file_mode(FileModeState state, const char *notice) {
+    auto &cp = espp::M5StackCardputer::get();
+    int battery_pct = -1;
+    int64_t last_battery_us = -10'000'000;
+    int64_t eject_seen_us = 0;
+    while (true) {
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_battery_us > 5'000'000) {
+            last_battery_us = now_us;
+            float sum = 0;
+            for (int i = 0; i < 8; ++i) sum += cp.battery_voltage();
+            battery_pct = battery_percent(sum / 8);
+        }
+        for (KeyAction a = keyboard_next(); a != KeyAction::None; a = keyboard_next())
+            if (a == KeyAction::ToggleFiles) file_mode_leave();
+        if (gpio_get_level(GPIO_NUM_0) == 0) file_mode_leave();
+        if (file_mode_ejected()) {  // let the computer finish its last commands first
+            if (eject_seen_us == 0) eject_seen_us = now_us;
+            if (now_us - eject_seen_us > 1'000'000) file_mode_leave();
+        }
+        ScreenModel model;
+        model.link = Link::UsbFiles;
+        model.mode = state == FileModeState::Ok ? Mode::Files : Mode::NoSd;
+        model.battery_pct = static_cast<int8_t>(battery_pct);
+        if (state == FileModeState::UsbFailed) model.notice = "USB FAILED";
+        (void)notice;
+        screen_draw(model, static_cast<uint32_t>(now_us / 1000));
+        vTaskDelay(pdMS_TO_TICKS(33));
+    }
+}
+
 }  // namespace
 
 extern "C" void app_main() {
@@ -163,6 +197,8 @@ extern "C" void app_main() {
     ESP_LOGI(TAG, "Cardputer variant detected, LCD ready");
 
     settings_init();
+    const bool file_mode = file_mode_boot_requested();  // `F` restarted the device into file mode
+    FileModeState file_state = FileModeState::Ok;
     audio_set_level(settings_volume(kVolumeMax));  // applied to the codec once audio_start() has set it up
 
     auto init_mic = [&]() {
@@ -179,15 +215,19 @@ extern "C" void app_main() {
 #else
     // Microphone first: the UAC mic task starts pulling from the FIFO as soon as the host opens it.
     init_mic();
-    uac_device_config_t config = {};
-    config.output_cb = on_speaker_data;
-    config.input_cb = on_mic_data;
-    config.set_mute_cb = on_mute;
-    config.set_volume_cb = on_volume;
-    config.cb_ctx = nullptr;
-    if (uac_device_init(&config) != ESP_OK) {
-        ESP_LOGE(TAG, "uac_device_init failed");
-        return;
+    if (file_mode) {
+        file_state = file_mode_start();
+    } else {
+        uac_device_config_t config = {};
+        config.output_cb = on_speaker_data;
+        config.input_cb = on_mic_data;
+        config.set_mute_cb = on_mute;
+        config.set_volume_cb = on_volume;
+        config.cb_ctx = nullptr;
+        if (uac_device_init(&config) != ESP_OK) {
+            ESP_LOGE(TAG, "uac_device_init failed");
+            return;
+        }
     }
 #endif
 
@@ -195,12 +235,13 @@ extern "C" void app_main() {
         ESP_LOGE(TAG, "keyboard init failed");
         std::snprintf(bottom, sizeof(bottom), "KEYBOARD FAIL");
     }
-    recorder_init();
     gpio_config_t btn = {};
     btn.pin_bit_mask = 1ULL << GPIO_NUM_0;  // G0 button: short press starts, 1 s hold stops (g0_button.hpp)
     btn.mode = GPIO_MODE_INPUT;
     btn.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&btn);
+    if (file_mode) run_file_mode(file_state, bottom);
+    recorder_init();
     G0Button g0;
 
     g_heartbeat_us = esp_timer_get_time();
@@ -278,7 +319,12 @@ extern "C" void app_main() {
                     volume_overlay_until_us = now_us + kVolumeOverlayUs;
                     break;
                 }
-                case KeyAction::ToggleFiles: ESP_LOGI(TAG, "F: file mode is not implemented yet (R4.5)"); break;
+                case KeyAction::ToggleFiles:
+#if !CONFIG_MYPLAUD_SCREEN_TEST
+                    // Only from READY with a card: nothing is open on the card, so the restart loses nothing.
+                    if (rec.state == RecorderState::Idle) file_mode_enter();
+#endif
+                    break;
                 default: break;
             }
         }

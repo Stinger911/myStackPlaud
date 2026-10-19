@@ -114,3 +114,12 @@ USB/I2S clock drift), a real Meet/Zoom call.
 - The reason of the stop is in `R<nnnn>.TXT` as `stop_reason=normal|write_error|sd_full|battery`.
 - Host tests: `test/power_policy_test.cpp` (space levels, battery curve, stop confirmation).
 
+
+## File mode (M4, R4.5 / R4.10)
+
+`F` in READY (card present) restarts the device as a USB flash drive: the SD card appears on the computer and
+nothing else runs (no recording, no headset). Leave with `F`, G0, or by ejecting the disk on the computer; the
+device restarts into the normal mode. Mode switching is a restart on purpose (one owner of the card, see
+`specs/M4-device-ux.md`, R4.5). Implementation: `main/file_mode.cpp` (RTC flag, mass-storage callbacks over raw
+`sdmmc` sectors, descriptors swapped with the linker's `--wrap`), the TinyUSB MSC class is enabled in the top
+`CMakeLists.txt`. The free-space field shows `--` in file mode.
