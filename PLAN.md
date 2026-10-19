@@ -50,7 +50,7 @@ Goal: the screen tells the truth and the device fails visibly; one-glance state 
 - Screen redesign: header (one link indicator `USB AUDIO` / `BT AUDIO` (reserved) / `USB FILES` / `LINK OFF`, battery), status row (REC, SOUND/SILENCE/NO HOST, warnings), 40 px elapsed time, ME/OT levels, footer (session, SD time left, drops). Debug HUD moves under `Tab`.
 - Stop by 1 s hold of G0 (short press only starts); short press while recording shows `HOLD TO STOP`.
 - States S0-S11 incl. NO SD, SD ERROR, LOW SPACE, DROP, CARD LOST, LOW BATTERY, LINK LOST; emergency stops close files validly first.
-- Beeps on start/stop/warnings (DAC only, never into ME); headphone volume with `+` / `-` (11 levels, ceiling at the current -20 dB cap, NVS).
+- Beeps on start/stop (done, verified not in ME: the start beep precedes the recording, the stop beep follows it) and flash; warning beeps stay visual-only while recording; headphone volume with `+` / `-` (11 levels, ceiling at the current -20 dB cap, NVS).
 - File mode (`F`): SD card exposed to the computer as a USB disk, from READY only.
 - Power (battery while USB audio is active, runtime), composite USB feasibility (audio + serial, audio + disk), card housekeeping.
 - Order (see spec): 1 screen refactor into zones + state model (started 2026-10-16), 2 data sources (levels, SD space, battery, drops), 3 normal states + stop by hold, 4 emergency states with fixtures, 5 volume, 6 link indicator + file mode after the composite-USB decision, 7 photos in `firmware/README.md`.

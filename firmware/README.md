@@ -128,3 +128,12 @@ device restarts into the normal mode. Mode switching is a restart on purpose (on
 
 The battery charges over USB-C while the device works as a USB headset (confirmed on the hardware, 2026-10-19).
 Runtime on battery while recording has not been measured yet.
+
+## Start/stop feedback (M4, R4.3)
+
+Start: beep (880 Hz, 80 ms) and a green flash, the recording begins 120 ms later. Stop: after the hold, once the
+files are closed, a double beep (880, 440 Hz) and a white flash. Failure stops: a 330 Hz tone for 1 s after the
+files are closed. Beeps go to the headphone/speaker path only, after the host stream has been handed to the
+recorder, and they follow the device and host volume (silent at level 0). Volume ticks play only when nothing is
+recording; warning beeps during a recording are off unless built with `MYPLAUD_BEEPS_WHILE_RECORDING`.
+R0014 (13.8 s, one start and one stop) has no beep tone in ME or OT.
