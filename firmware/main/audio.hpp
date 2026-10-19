@@ -19,6 +19,7 @@ void audio_play(const int16_t *samples, size_t count);
 // Host controls. `volume` is 0..100 (0 = -50 dB, 100 = 0 dB, as delivered by usb_device_uac).
 void audio_set_host_volume(uint32_t volume);
 void audio_set_mute(bool mute);
+bool audio_host_muted();
 
 // Device headphone level 0..10 (0 = mute, 10 = the DAC cap), 3 dB per step below the host's volume.
 // Only the playback path: the ME and OT recordings do not see it. Call before audio_start() to set the start level.

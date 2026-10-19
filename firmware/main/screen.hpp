@@ -51,6 +51,7 @@ struct ScreenModel {
 
     float level_me = 0.0f;  // 0..1, see level_from_peak()
     float level_ot = 0.0f;
+    bool host_mute = false;        // the host muted the headset: shown instead of the volume bar
     int8_t volume = -1;            // 0..10 shows the volume overlay, -1 hides it
     const char *notice = nullptr;  // optional boot message shown in READY (e.g. watchdog report)
 

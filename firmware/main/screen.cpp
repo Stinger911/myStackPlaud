@@ -295,7 +295,7 @@ void draw_levels(const ScreenModel &m) {
     draw_text("ME", 8, kLevelsY, 2, kGrey);
     draw_bar(34, kLevelsY + 3, m.level_me, kGreen);
     draw_text("OT", 124, kLevelsY, 2, kGrey);
-    draw_bar(150, kLevelsY + 3, m.level_ot, kCyan);
+    draw_bar(150, kLevelsY + 3, m.level_ot, host_present(m.link) ? kCyan : kDim);  // no host: nothing to show
 }
 
 struct Slot {
@@ -407,7 +407,11 @@ void draw_centre(const ScreenModel &m, uint32_t now_ms) {
 void draw_volume_overlay(const ScreenModel &m) {
     if (m.volume < 0 || m.mode == Mode::Files) return;
     fill_rect(kBorder, 90, 236, 18, kBlack);
-    draw_text("VOL", 8, kLevelsY, 2, m.volume ? kWhite : kGrey);
+    draw_text("VOL", 8, kLevelsY, 2, m.volume && !m.host_mute ? kWhite : kGrey);
+    if (m.host_mute) {  // the host's mute wins over the device level
+        draw_text("HOST MUTE", 120, kLevelsY, 2, kOrange, Align::Center);
+        return;
+    }
     if (m.volume == 0) {
         draw_text("MUTE", 120, kLevelsY, 2, kOrange, Align::Center);
         return;

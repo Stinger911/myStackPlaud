@@ -310,6 +310,8 @@ i2c_master_bus_handle_t audio_i2c_bus() { return s_bus; }
 
 void audio_set_mute(bool mute) { s_mute.store(mute); }
 
+bool audio_host_muted() { return s_mute.load(); }
+
 AudioStats audio_stats() {
     return {s_read_ok.load(),      s_read_err.load(),       s_last_err.load(),
             s_raw_peak.exchange(0), s_play_underrun.load(), s_play_trim.load(),

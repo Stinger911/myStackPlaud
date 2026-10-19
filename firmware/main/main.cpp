@@ -33,6 +33,7 @@
 #include "file_mode.hpp"
 #include "g0_button.hpp"
 #include "keyboard.hpp"
+#include "link_debounce.hpp"
 #include "power_policy.hpp"
 #include "settings.hpp"
 #include "volume.hpp"
@@ -260,6 +261,7 @@ extern "C" void app_main() {
 #endif
     constexpr int64_t kVolumeOverlayUs = 1'500'000;
     int64_t volume_overlay_until_us = 0;  // the volume bar is shown until then
+    bool host_muted = false;  // the overlay is shown when the host changes it
     BatteryMonitor battery_monitor;
     BatteryLevel battery_level = BatteryLevel::Ok;
     int battery_pct = -1;
@@ -295,7 +297,8 @@ extern "C" void app_main() {
                      static_cast<unsigned>(st.read_ok), static_cast<unsigned>(st.read_err), st.last_err, st.raw_peak);
         }
 #else
-        bool connected = tud_mounted();
+        static LinkDebounce link;  // up at once, down after 0.5 s; a suspended bus (host asleep) counts as down
+        bool connected = link.update(tud_mounted() && !tud_suspended(), static_cast<uint32_t>(esp_timer_get_time() / 1000));
         g_dbg_stage = 2;
         g_ring.snapshot(window.data(), window.size());
 #endif
@@ -367,12 +370,17 @@ extern "C" void app_main() {
                 default: break;
             }
         }
+        if (audio_host_muted() != host_muted) {
+            host_muted = audio_host_muted();
+            volume_overlay_until_us = now_us + kVolumeOverlayUs;
+        }
         if (volume_unsaved && now_us > volume_overlay_until_us) {
             settings_set_volume(audio_level());
             volume_unsaved = false;
         }
         ScreenModel model;
         model.flash = now_us < flash_until_us ? flash_colour : Flash::None;
+        model.host_mute = host_muted;
         model.volume = now_us < volume_overlay_until_us ? static_cast<int8_t>(audio_level()) : -1;
         model.link = connected ? Link::UsbAudio : Link::Off;
         model.host_sound = connected && (now_us - last_sound_us) < kSilenceAfterUs;
